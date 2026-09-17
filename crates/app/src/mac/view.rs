@@ -60,6 +60,10 @@ pub struct ViewState {
     /// A press was sent to the program (mouse reporting), so drags and the release go there too.
     mouse_reported: bool,
     last_mouse_cell: Option<(usize, usize)>,
+    /// Frames drawn so far (the self-test uses it to measure frame rate).
+    frames: u64,
+    /// The folder button opened a folder (self-test check).
+    folder_opened: bool,
 }
 
 define_class!(
@@ -360,6 +364,8 @@ impl TermView {
             tracking: None,
             mouse_reported: false,
             last_mouse_cell: None,
+            frames: 0,
+            folder_opened: false,
         };
         let this = Self::alloc(mtm).set_ivars(RefCell::new(state));
         unsafe { msg_send![super(this), initWithFrame: frame] }
@@ -433,6 +439,9 @@ impl TermView {
     fn on_key_down(&self, event: &NSEvent) {
         let flags = event.modifierFlags();
         if flags.contains(NSEventModifierFlags::Command) {
+            // Normally handled by performKeyEquivalent before keyDown; this covers events
+            // delivered straight to the window.
+            self.on_command_key(event);
             return;
         }
         let mods = Mods {
@@ -656,7 +665,8 @@ impl TermView {
             }
             edge => {
                 if let Some(w) = self.window() {
-                    self.ivars().borrow_mut().resizing = Some((edge, NSEvent::mouseLocation(), w.frame()));
+                    let start = w.convertPointToScreen(event.locationInWindow());
+                    self.ivars().borrow_mut().resizing = Some((edge, start, w.frame()));
                 }
             }
         }
@@ -665,7 +675,9 @@ impl TermView {
     fn on_mouse_dragged(&self, event: &NSEvent) {
         let resizing = self.ivars().borrow().resizing;
         if let Some((edge, start, frame)) = resizing {
-            let now = NSEvent::mouseLocation();
+            // From the event itself (not the live cursor), so scripted drags work too.
+            let Some(win) = self.window() else { return };
+            let now = win.convertPointToScreen(event.locationInWindow());
             let (dx, dy) = (now.x - start.x, now.y - start.y);
             let (min_w, min_h) = (420.0, 280.0);
             let mut f = frame;
@@ -769,9 +781,12 @@ impl TermView {
             Button::Zoom => self.toggle_zoom(),
             Button::Terminal => {}
             Button::Folder => {
-                if let Ok(home) = std::env::var("HOME") {
-                    let url = NSURL::fileURLWithPath(&NSString::from_str(&home));
-                    NSWorkspace::sharedWorkspace().openURL(&url);
+                // TRINIDAD_HEAD_FOLDER lets the self-test open a throwaway folder instead of ~.
+                let dir = std::env::var("TRINIDAD_HEAD_FOLDER").or_else(|_| std::env::var("HOME"));
+                if let Ok(dir) = dir {
+                    let url = NSURL::fileURLWithPath(&NSString::from_str(&dir));
+                    let ok = NSWorkspace::sharedWorkspace().openURL(&url);
+                    self.ivars().borrow_mut().folder_opened = ok;
                 }
             }
             Button::Glow => {
@@ -897,7 +912,33 @@ impl TermView {
         self.setNeedsDisplay(true);
     }
 
+    pub(super) fn layout(&self) -> Layout {
+        self.ivars().borrow().layout
+    }
+
+    pub(super) fn shared(&self) -> Arc<Mutex<Shared>> {
+        self.ivars().borrow().shared.clone()
+    }
+
+    pub(super) fn glow(&self) -> usize {
+        self.ivars().borrow().glow
+    }
+
+    pub(super) fn cell_size(&self) -> (f64, f64) {
+        let st = self.ivars().borrow();
+        (st.cell_w, st.cell_h)
+    }
+
+    pub(super) fn frames(&self) -> u64 {
+        self.ivars().borrow().frames
+    }
+
+    pub(super) fn folder_opened(&self) -> bool {
+        self.ivars().borrow().folder_opened
+    }
+
     fn draw(&self) {
+        self.ivars().borrow_mut().frames += 1;
         let focused = self.focused();
         let Some(ctx) = NSGraphicsContext::currentContext() else { return };
         let cg = ctx.CGContext();

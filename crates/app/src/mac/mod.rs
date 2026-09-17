@@ -3,6 +3,7 @@
 
 mod keys;
 mod paint;
+mod selftest;
 mod view;
 
 use std::io::Read;
@@ -75,6 +76,11 @@ define_class!(
         #[unsafe(method(applicationShouldTerminateAfterLastWindowClosed:))]
         fn should_terminate(&self, _app: &NSApplication) -> bool {
             true
+        }
+
+        #[unsafe(method(applicationWillTerminate:))]
+        fn will_terminate(&self, _note: &objc2_foundation::NSNotification) {
+            selftest::on_terminate();
         }
     }
 );
@@ -185,56 +191,28 @@ pub fn run() {
 
     // Shell-reader thread: parse output off the main thread, then ask for one repaint.
     let output = pty.lock().unwrap().take_output().expect("pty output");
-    std::thread::spawn(move || reader_loop(output, shared, pty));
+    let pty_for_reader = pty.clone();
+    std::thread::spawn(move || reader_loop(output, shared, pty_for_reader));
+    // Close when the shell itself ends, even if something it started (a background helper, an
+    // MCP server) still holds the terminal open and the output never reaches end-of-file.
+    std::thread::spawn(move || loop {
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        let exited = pty.lock().unwrap().exit_code().is_some();
+        if exited {
+            // Give the last output a moment to be read and drawn.
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            close_window_soon();
+            break;
+        }
+    });
 
     window.makeKeyAndOrderFront(None);
     #[allow(deprecated)]
     app.activateIgnoringOtherApps(true);
-    if std::env::var_os("TRINIDAD_HEAD_SELFTEST").is_some() {
-        self_test(&window);
+    if let Ok(mode) = std::env::var("TRINIDAD_HEAD_SELFTEST") {
+        selftest::start(&mode, window.retain(), view.clone());
     }
     app.run();
-}
-
-/// Test hook (TRINIDAD_HEAD_SELFTEST=1): after a moment, feed this window a click, a drag and
-/// two wheel notches through AppKit's normal event path, so mouse handling can be checked
-/// without touching any other app.
-fn self_test(window: &THWindow) {
-    use objc2_app_kit::{NSEvent, NSEventModifierFlags, NSEventType};
-    let window = window.retain();
-    let events = move || {
-        let num = window.windowNumber();
-        let frame = window.frame();
-        // Window coordinates run bottom-up; aim at the middle of the text area.
-        let at = |dx: f64| NSPoint::new(frame.size.width * 0.4 + dx, frame.size.height * 0.6);
-        let mouse = |t: NSEventType, p: NSPoint| {
-            NSEvent::mouseEventWithType_location_modifierFlags_timestamp_windowNumber_context_eventNumber_clickCount_pressure(
-                t, p, NSEventModifierFlags::empty(), 0.0, num, None, 0, 1, 1.0,
-            )
-        };
-        for (t, p) in [
-            (NSEventType::LeftMouseDown, at(0.0)),
-            (NSEventType::LeftMouseDragged, at(60.0)),
-            (NSEventType::LeftMouseUp, at(60.0)),
-        ] {
-            if let Some(e) = mouse(t, p) {
-                window.sendEvent(&e);
-            }
-        }
-        // One wheel notch up, then one down.
-        for notch in [1, -1] {
-            use objc2_core_graphics::{CGEvent, CGScrollEventUnit};
-            if let Some(cg) = CGEvent::new_scroll_wheel_event2(None, CGScrollEventUnit::Line, 1, notch, 0, 0) {
-                if let Some(e) = NSEvent::eventWithCGEvent(&cg) {
-                    window.sendEvent(&e);
-                }
-            }
-        }
-    };
-    let timer_block = block2::RcBlock::new(move |_t: std::ptr::NonNull<objc2_foundation::NSTimer>| events());
-    unsafe {
-        let _ = objc2_foundation::NSTimer::scheduledTimerWithTimeInterval_repeats_block(3.0, false, &timer_block);
-    }
 }
 
 fn reader_loop(mut output: std::fs::File, shared: Arc<Mutex<Shared>>, pty: Arc<Mutex<Pty>>) {
@@ -267,7 +245,11 @@ fn reader_loop(mut output: std::fs::File, shared: Arc<Mutex<Shared>>, pty: Arc<M
             }
         }
     }
-    // The shell ended: close the window, which quits the app.
+    close_window_soon();
+}
+
+/// Close the window (which quits the app) on the main thread.
+fn close_window_soon() {
     dispatch2::DispatchQueue::main().exec_async(|| {
         VIEW.with(|v| {
             if let Some(v) = v.borrow().as_ref() {

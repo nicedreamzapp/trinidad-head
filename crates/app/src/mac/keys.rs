@@ -86,6 +86,8 @@ pub fn control(chars: &str, m: Mods) -> Option<Vec<u8>> {
             }
         }
         0x1B => vec![0x1B],
+        // Shift+Tab (AppKit reports it as the "backtab" control character).
+        0x19 => return Some(b"\x1b[Z".to_vec()),
         n if n < 0x20 => vec![n as u8],
         _ if m.ctrl => {
             // Ctrl+Space and friends that AppKit didn't already turn into a control code.
@@ -128,6 +130,7 @@ mod tests {
         assert_eq!(control("\u{3}", Mods { ctrl: true, ..Default::default() }).unwrap(), b"\x03");
         assert_eq!(control("c", Mods { ctrl: true, ..Default::default() }).unwrap(), b"\x03");
         assert_eq!(control("\u{1b}", Mods { alt: true, ..Default::default() }).unwrap(), b"\x1b\x1b");
+        assert_eq!(control("\u{19}", Mods { shift: true, ..Default::default() }).unwrap(), b"\x1b[Z");
         assert!(control("a", Mods::default()).is_none());
         assert!(control("ab", Mods::default()).is_none());
     }
