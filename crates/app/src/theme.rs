@@ -28,6 +28,14 @@ pub const BODY_OPACITY: f32 = 0.98;
 pub const TINT_A: u32 = 0x1C2658;
 pub const TINT_B: u32 = 0x3A1450;
 pub const TEXT: u32 = 0xD7DBE3;
+
+/// Claude Code's "your message" bar. The PC's Claude theme (~/.claude/themes/trinidad-head.json)
+/// paints it this exact color; cells on it get dark green, bold, taller text so Matt's own
+/// prompts stand out when scrolling back (2026-09-17, his pick: sample 8).
+pub const USER_BAR: (u8, u8, u8) = (0xA5, 0xD8, 0xFF);
+pub const USER_TEXT: u32 = 0x0B3D20;
+/// How much taller Matt's prompt text is drawn (width stays on the grid).
+pub const USER_TEXT_STRETCH: f32 = 1.22;
 pub const ICON: u32 = 0xA9B0BD;
 
 pub fn by_name(name: &str) -> usize {

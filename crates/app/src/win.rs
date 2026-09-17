@@ -49,7 +49,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCACTIVATE, WM_NCCALCSIZE, WM_NCHITTEST, WM_PAINT, WM_RBUTTONUP,
     WM_SETFOCUS, WM_SIZE, WM_SYSCHAR, WM_SYSKEYDOWN, WNDCLASSW, WS_EX_NOREDIRECTIONBITMAP, WS_OVERLAPPEDWINDOW,
 };
-use windows_numerics::Vector2;
+use windows_numerics::{Matrix3x2, Vector2};
 
 use crate::gfx::Gfx;
 use windows::core::Interface;
@@ -127,6 +127,9 @@ pub fn run() {
     unsafe {
         let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     }
+    // Tell programs in the shell we draw full 24-bit color (Claude Code checks this).
+    std::env::set_var("COLORTERM", "truecolor");
+    std::env::set_var("TERM_PROGRAM", "TrinidadHead");
     // Everything after our own name is the command to run, passed through exactly as typed so
     // quoted paths with spaces survive (shortcuts rely on this).
     let command = unsafe { windows::Win32::System::Environment::GetCommandLineW().to_string() }
@@ -1079,7 +1082,14 @@ impl App {
                             break;
                         }
                     }
-                    let (fg, bg) = colors(&attrs, default_fg);
+                    let (mut fg, bg) = colors(&attrs, default_fg);
+                    let (ur, ug, ub) = theme::USER_BAR;
+                    let user_bar = attrs.bg == Color::Rgb(ur, ug, ub);
+                    let mut run_attrs = attrs;
+                    if user_bar {
+                        fg = rgb(theme::USER_TEXT);
+                        run_attrs.bold = true;
+                    }
                     let x0 = left + start as f32 * cw;
                     let x1 = left + col as f32 * cw;
                     if let Some(bg) = bg {
@@ -1088,7 +1098,16 @@ impl App {
                     }
                     if text.iter().any(|&u| u != b' ' as u16) {
                         brush.SetColor(&fg);
-                        self.draw_text(&dc, &brush, &text, &attrs, x0, y, x1 + cw);
+                        if user_bar {
+                            // Taller letters around the row's middle; widths stay on the grid.
+                            let k = theme::USER_TEXT_STRETCH;
+                            let cy = y + ch / 2.0;
+                            dc.SetTransform(&Matrix3x2 { M11: 1.0, M12: 0.0, M21: 0.0, M22: k, M31: 0.0, M32: cy - k * cy });
+                            self.draw_text(&dc, &brush, &text, &run_attrs, x0, y, x1 + cw);
+                            dc.SetTransform(&Matrix3x2 { M11: 1.0, M12: 0.0, M21: 0.0, M22: 1.0, M31: 0.0, M32: 0.0 });
+                        } else {
+                            self.draw_text(&dc, &brush, &text, &attrs, x0, y, x1 + cw);
+                        }
                     }
                     if attrs.underline {
                         brush.SetColor(&fg);
