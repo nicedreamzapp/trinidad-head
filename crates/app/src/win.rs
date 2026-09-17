@@ -63,7 +63,7 @@ const LIGHTS: [(f32, u32); 3] = [(20.0, 0xFF5F57), (40.0, 0xFEBC2E), (60.0, 0x28
 const LIGHT_R: f32 = 6.0;
 /// Corner radius. Windows 11 only rounds to 8 px on its own, so we cut the shape ourselves.
 const CORNER_DIP: f32 = 16.0;
-const APP_NAME: &str = "Tombolo";
+const APP_NAME: &str = "Trinidad Head";
 
 /// State shared between the window thread and the shell-reader thread.
 struct Shared {
@@ -113,7 +113,7 @@ pub fn run() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let command = if args.is_empty() { pty::default_shell() } else { args.join(" ") };
     let data_dir = std::env::var("LOCALAPPDATA")
-        .map(|d| std::path::PathBuf::from(d).join("Tombolo"))
+        .map(|d| std::path::PathBuf::from(d).join("TrinidadHead"))
         .ok();
     if let Some(d) = &data_dir {
         let _ = std::fs::create_dir_all(d);
@@ -121,12 +121,12 @@ pub fn run() {
     let log = data_dir.as_ref().and_then(|d| {
         std::fs::OpenOptions::new().create(true).append(true).open(d.join("latency.log")).ok()
     });
-    // Test hook: TOMBOLO_DUMP=path writes the visible screen there a few times a second.
-    let dump_path = std::env::var_os("TOMBOLO_DUMP").map(std::path::PathBuf::from);
+    // Test hook: TRINIDAD_HEAD_DUMP=path writes the visible screen there a few times a second.
+    let dump_path = std::env::var_os("TRINIDAD_HEAD_DUMP").map(std::path::PathBuf::from);
 
     unsafe {
         let instance = GetModuleHandleW(None).expect("module handle");
-        let class = w!("TomboloWindow");
+        let class = w!("TrinidadHeadWindow");
         let wc = WNDCLASSW {
             style: CS_HREDRAW | CS_VREDRAW,
             lpfnWndProc: Some(wndproc),
@@ -170,7 +170,7 @@ pub fn run() {
                     windows::Win32::UI::WindowsAndMessaging::MessageBoxW(
                         Some(hwnd),
                         PCWSTR(msg.as_ptr()),
-                        w!("Tombolo"),
+                        w!("Trinidad Head"),
                         Default::default(),
                     );
                     return;
@@ -821,7 +821,7 @@ impl App {
                 self.first_frame_logged = true;
                 if let Ok(d) = std::env::var("LOCALAPPDATA") {
                     let _ = std::fs::write(
-                        std::path::Path::new(&d).join("Tombolo").join("startup.log"),
+                        std::path::Path::new(&d).join("TrinidadHead").join("startup.log"),
                         format!("first shell output on screen after {:.0} ms\n", (now - self.started).as_secs_f64() * 1000.0),
                     );
                 }

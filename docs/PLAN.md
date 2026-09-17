@@ -1,4 +1,4 @@
-# Tombolo — plan (2026-09-16)
+# Trinidad Head — plan (2026-09-16)
 
 Written from scratch in Rust, with no Ghostty engine inside, and built as a **platform** other
 things grow from, not a single app. This replaces the "Draft plan" in RESEARCH.md, but the pain

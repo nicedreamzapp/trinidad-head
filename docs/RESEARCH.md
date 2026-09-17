@@ -1,4 +1,4 @@
-# Tombolo — research (2026-09-16)
+# Trinidad Head — research (2026-09-16)
 
 Early goal: a Windows-first terminal on Ghostty's engine (libghostty, MIT) that fixes what people complain about in Ghostty. We later chose to write everything from scratch (see PLAN.md), but these findings still drive the design.
 

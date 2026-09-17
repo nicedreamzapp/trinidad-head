@@ -1,11 +1,11 @@
 [package]
-name = "tombolo"
+name = "trinidad-head"
 description = "The terminal window."
 version.workspace = true
 edition.workspace = true
 
 [[bin]]
-name = "tombolo"
+name = "trinidad-head"
 path = "src/main.rs"
 
 [dependencies]

@@ -1,10 +1,10 @@
-# Tombolo
+# Trinidad Head
 
-A tombolo is a strip of sand that ties an island to the mainland. This terminal is meant to join
-things the same way: Windows and Linux in one window, and people and AI agents working on the same
-live sessions.
+Trinidad Head is a headland on the Northern California coast, tied to the mainland by a strip of
+sand. This terminal is meant to join things the same way: Windows and Linux in one window, and
+people and AI agents working on the same live sessions.
 
-Tombolo is written from scratch in Rust. Windows comes first, and a Mac version will follow. It has
+Trinidad Head is written from scratch in Rust. Windows comes first, and a Mac version will follow. It has
 no Electron and no borrowed terminal engine. It's early: the first window runs today, and most of
 the plan below is still ahead.
 
@@ -16,7 +16,7 @@ the plan below is still ahead.
   phone viewer can reuse it.
 - **Windows ConPTY host** (`pty`) runs PowerShell 7 if it's installed, otherwise Windows
   PowerShell, or any command you pass.
-- **A native window** (`tombolo`) draws with Direct2D and DirectWrite and is styled like a
+- **A native window** (`trinidad-head`) draws with Direct2D and DirectWrite and is styled like a
   macOS terminal:
   - dark glass: #191d27 at 95% over an acrylic blur
   - 16 px rounded corners
@@ -48,14 +48,14 @@ these choices.
 
 ## Build (Windows)
 
-Tombolo builds without Visual Studio, using the LLVM-based MinGW toolchain:
+Trinidad Head builds without Visual Studio, using the LLVM-based MinGW toolchain:
 
 ```
 rustup default stable-x86_64-pc-windows-gnullvm
 # put llvm-mingw (https://github.com/mstorsjo/llvm-mingw) on PATH
 cargo build --release
-target\release\tombolo.exe            # default shell
-target\release\tombolo.exe cmd.exe    # or any command
+target\release\trinidad-head.exe            # default shell
+target\release\trinidad-head.exe cmd.exe    # or any command
 ```
 
 The engine's tests run on any OS: `cargo test -p core-vt`.
@@ -65,7 +65,7 @@ The engine's tests run on any OS: `cargo test -p core-vt`.
 ```
 crates/core-vt   terminal parser + screen state (portable)
 crates/pty       pseudo-console host (Windows ConPTY today)
-crates/app       the window (binary: tombolo)
+crates/app       the window (binary: trinidad-head)
 docs/            plan and research
 ```
 

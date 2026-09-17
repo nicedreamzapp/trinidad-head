@@ -46,7 +46,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "tombolo"
+name = "trinidad-head"
 version = "0.1.0"
 dependencies = [
  "core-vt",
