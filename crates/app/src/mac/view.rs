@@ -128,6 +128,50 @@ define_class!(
             self.on_key_down(event);
         }
 
+        // Dictation asks Accessibility whether a text field has focus; without these it says
+        // there is nowhere to type.
+        #[unsafe(method(isAccessibilityElement))]
+        fn is_accessibility_element(&self) -> bool {
+            true
+        }
+
+        #[unsafe(method_id(accessibilityRole))]
+        fn accessibility_role(&self) -> Retained<NSString> {
+            NSString::from_str("AXTextArea")
+        }
+
+        #[unsafe(method_id(accessibilityValue))]
+        fn accessibility_value(&self) -> Option<Retained<AnyObject>> {
+            let text = {
+                let st = self.ivars().borrow();
+                let s = st.shared.lock().unwrap();
+                (0..s.term.rows()).map(|r| s.term.row_text(r)).collect::<Vec<_>>().join("\n")
+            };
+            Some(Retained::into_super(Retained::into_super(NSString::from_str(&text))))
+        }
+
+        #[unsafe(method(accessibilitySelectedTextRange))]
+        fn accessibility_selected_range(&self) -> NSRange {
+            NSRange::new(0, 0)
+        }
+
+        #[unsafe(method(isAccessibilityFocused))]
+        fn is_accessibility_focused(&self) -> bool {
+            let me = self as *const Self as *const NSResponder;
+            self.window().is_some_and(|w| w.firstResponder().is_some_and(|r| std::ptr::eq(&*r, me)))
+        }
+
+        // A lone modifier press only reaches the input system if we pass it on; without this,
+        // the "press Control twice" dictation shortcut never fires.
+        #[unsafe(method(flagsChanged:))]
+        fn flags_changed(&self, event: &NSEvent) {
+            let ctx: Option<Retained<AnyObject>> = unsafe { msg_send![self, inputContext] };
+            if let Some(ctx) = ctx {
+                let _: bool = unsafe { msg_send![&*ctx, handleEvent: event] };
+            }
+            let _: () = unsafe { msg_send![super(self), flagsChanged: event] };
+        }
+
         #[unsafe(method(performKeyEquivalent:))]
         fn perform_key_equivalent(&self, event: &NSEvent) -> bool {
             self.on_command_key(event)
@@ -221,7 +265,8 @@ define_class!(
 
         #[unsafe(method(selectedRange))]
         fn selected_range(&self) -> NSRange {
-            NSRange::new(NSNotFound as NSUInteger, 0)
+            // An empty caret, not "no selection": dictation won't start without an insertion point.
+            NSRange::new(0, 0)
         }
 
         #[unsafe(method(markedRange))]

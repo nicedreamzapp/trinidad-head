@@ -46,8 +46,15 @@ cat > "$STAGE/Contents/Info.plist" <<PLIST
 </dict>
 </plist>
 PLIST
-# Ad-hoc signature so macOS runs it without complaint on this machine.
-codesign --force --deep --sign - "$STAGE" >/dev/null 2>&1 || true
+# Sign with the Apple Development certificate when this Mac has one. An ad-hoc signature
+# changes with every build, and macOS then forgets Full Disk Access / Accessibility.
+IDENTITY="${TH_SIGN_IDENTITY:-$(security find-identity -v -p codesigning 2>/dev/null | sed -n 's/.*) \([0-9A-F]\{40\}\) "Apple Development:.*/\1/p' | head -1)}"
+if [ -n "$IDENTITY" ] && codesign --force --deep --sign "$IDENTITY" "$STAGE" >/dev/null 2>&1; then
+  echo "signed with $IDENTITY"
+else
+  codesign --force --deep --sign - "$STAGE" >/dev/null 2>&1 || true
+  echo "ad-hoc signed (permissions reset on each build)"
+fi
 
 mkdir -p "$HOME/Applications"
 rm -rf "$APP"
