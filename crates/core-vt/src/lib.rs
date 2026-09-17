@@ -173,6 +173,38 @@ impl Terminal {
         }
     }
 
+    /// All lines, history first: indexes run from 0 to `total_lines() - 1`.
+    pub fn total_lines(&self) -> usize {
+        self.scrollback.len() + self.rows
+    }
+
+    pub fn abs_line(&self, i: usize) -> &[Cell] {
+        if i < self.scrollback.len() {
+            &self.scrollback[i]
+        } else {
+            &self.grid[(i - self.scrollback.len()).min(self.rows - 1)]
+        }
+    }
+
+    /// Text between two (line, column) points, inclusive, in reading order. Lines are joined
+    /// with newlines and their trailing spaces dropped.
+    pub fn text_between(&self, a: (usize, usize), b: (usize, usize)) -> String {
+        let (start, end) = if a <= b { (a, b) } else { (b, a) };
+        let last = self.total_lines().saturating_sub(1);
+        let mut out = String::new();
+        for i in start.0..=end.0.min(last) {
+            let line = self.abs_line(i);
+            let from = if i == start.0 { start.1 } else { 0 };
+            let to = if i == end.0 { (end.1 + 1).min(line.len()) } else { line.len() };
+            let piece: String = line[from.min(to)..to].iter().filter(|c| !c.spacer).map(|c| c.ch).collect();
+            out.push_str(piece.trim_end());
+            if i != end.0 {
+                out.push('\n');
+            }
+        }
+        out
+    }
+
     /// Plain text of a live screen row, trailing spaces trimmed.
     pub fn row_text(&self, row: usize) -> String {
         let s: String = self.grid[row].iter().filter(|c| !c.spacer).map(|c| c.ch).collect();
@@ -926,6 +958,15 @@ mod tests {
         assert_eq!(t.row_text(1), "c");
         assert_eq!(t.row_text(2), "");
         assert_eq!(t.row_text(3), "d");
+    }
+
+    #[test]
+    fn selection_text_spans_history() {
+        let mut t = Terminal::new(10, 2);
+        t.feed(b"one\r\ntwo\r\nthree");
+        assert_eq!(t.total_lines(), 3);
+        assert_eq!(t.text_between((0, 1), (2, 2)), "ne\ntwo\nthr");
+        assert_eq!(t.text_between((2, 2), (0, 1)), "ne\ntwo\nthr");
     }
 
     #[test]

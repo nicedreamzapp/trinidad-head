@@ -6,6 +6,8 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 #[cfg_attr(not(windows), allow(dead_code))]
+mod cmdline;
+#[cfg_attr(not(windows), allow(dead_code))]
 mod latency;
 #[cfg(windows)]
 mod gfx;

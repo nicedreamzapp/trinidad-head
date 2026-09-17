@@ -104,6 +104,10 @@ struct App {
     pressed: Option<Button>,
     tracking_mouse: bool,
     high_surrogate: Option<u16>,
+    /// Selected text as (line, column) points; lines count from the top of history.
+    sel: Option<((usize, usize), (usize, usize))>,
+    selecting: bool,
+    skip_char: bool,
     meter: crate::latency::Meter,
     last_title: Instant,
     started: Instant,
@@ -123,8 +127,13 @@ pub fn run() {
     unsafe {
         let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     }
-    let args: Vec<String> = std::env::args().skip(1).collect();
-    let command = if args.is_empty() { pty::default_shell() } else { args.join(" ") };
+    // Everything after our own name is the command to run, passed through exactly as typed so
+    // quoted paths with spaces survive (shortcuts rely on this).
+    let command = unsafe { windows::Win32::System::Environment::GetCommandLineW().to_string() }
+        .ok()
+        .map(|line| crate::cmdline::tail(&line).to_string())
+        .filter(|t| !t.is_empty())
+        .unwrap_or_else(pty::default_shell);
     let data_dir = std::env::var("LOCALAPPDATA").map(|d| std::path::PathBuf::from(d).join("TrinidadHead")).ok();
     if let Some(d) = &data_dir {
         let _ = std::fs::create_dir_all(d);
@@ -149,6 +158,9 @@ pub fn run() {
             lpfnWndProc: Some(wndproc),
             hInstance: instance.into(),
             hCursor: LoadCursorW(None, IDC_ARROW).unwrap_or_default(),
+            // Icon resource 1, embedded by build.rs.
+            hIcon: windows::Win32::UI::WindowsAndMessaging::LoadIconW(Some(instance.into()), PCWSTR(1 as *const u16))
+                .unwrap_or_default(),
             lpszClassName: class,
             ..Default::default()
         };
@@ -230,6 +242,9 @@ pub fn run() {
             pressed: None,
             tracking_mouse: false,
             high_surrogate: None,
+            sel: None,
+            selecting: false,
+            skip_char: false,
             meter: crate::latency::Meter::new(log),
             last_title: Instant::now(),
             started,
@@ -372,6 +387,9 @@ impl App {
                     Some(LRESULT(0))
                 }
                 WM_CHAR | WM_SYSCHAR => {
+                    if std::mem::take(&mut self.skip_char) {
+                        return Some(LRESULT(0));
+                    }
                     self.on_char(wparam.0 as u16, msg == WM_SYSCHAR);
                     Some(LRESULT(0))
                 }
@@ -405,6 +423,14 @@ impl App {
                         self.tracking_mouse = TrackMouseEvent(&mut tme).is_ok();
                     }
                     let (x, y) = xy(lparam);
+                    if self.selecting {
+                        let p = self.cell_at(x, y);
+                        if let Some(sel) = self.sel.as_mut() {
+                            sel.1 = p;
+                        }
+                        self.render();
+                        return Some(LRESULT(0));
+                    }
                     let hover = self.layout.button_at(x, y);
                     if hover != self.hover {
                         self.hover = hover;
@@ -426,11 +452,29 @@ impl App {
                     if self.pressed.is_some() {
                         SetCapture(self.hwnd);
                         self.render();
+                    } else if self.layout.in_body(x, y) {
+                        // Start selecting text.
+                        let p = self.cell_at(x, y);
+                        self.sel = Some((p, p));
+                        self.selecting = true;
+                        SetCapture(self.hwnd);
+                        self.render();
                     }
                     Some(LRESULT(0))
                 }
                 WM_LBUTTONUP => {
                     let (x, y) = xy(lparam);
+                    if self.selecting {
+                        self.selecting = false;
+                        let _ = ReleaseCapture();
+                        match self.sel {
+                            // Like most terminals: releasing the mouse copies what you selected.
+                            Some((a, b)) if a != b => self.copy_selection(),
+                            _ => self.sel = None,
+                        }
+                        self.render();
+                        return Some(LRESULT(0));
+                    }
                     if let Some(b) = self.pressed.take() {
                         let _ = ReleaseCapture();
                         if self.layout.button_at(x, y) == Some(b) {
@@ -474,7 +518,27 @@ impl App {
         }
     }
 
+    /// The (line, column) under a pixel, counting lines from the top of history.
+    fn cell_at(&self, x: f32, y: f32) -> (usize, usize) {
+        let t = self.layout.text;
+        let st = self.shared.lock().unwrap();
+        let term = &st.term;
+        let offset = self.scroll_offset.min(term.scrollback_len());
+        let row = ((y - t.t) / self.cell_h).floor().clamp(0.0, (term.rows() - 1) as f32) as usize;
+        let col = ((x - t.l) / self.cell_w).floor().clamp(0.0, (term.cols() - 1) as f32) as usize;
+        (term.scrollback_len() - offset + row, col)
+    }
+
+    fn copy_selection(&mut self) {
+        let Some((a, b)) = self.sel else { return };
+        let text = self.shared.lock().unwrap().term.text_between(a, b);
+        if !text.is_empty() {
+            unsafe { set_clipboard_text(self.hwnd, &text) };
+        }
+    }
+
     fn send(&mut self, bytes: &[u8]) {
+        self.sel = None;
         self.meter.key(Instant::now());
         self.scroll_offset = 0;
         let _ = self.pty.lock().unwrap().write(bytes);
@@ -522,7 +586,16 @@ impl App {
             self.render();
             return true;
         }
+        // Ctrl+C copies when something is selected, otherwise it goes to the shell as usual.
+        if ctrl && vk.0 == b'C' as u16 && (shift || self.sel.is_some()) {
+            self.copy_selection();
+            self.sel = None;
+            self.skip_char = true;
+            self.render();
+            return true;
+        }
         if ctrl && shift && vk.0 == b'V' as u16 {
+            self.skip_char = true;
             self.paste();
             return true;
         }
@@ -960,9 +1033,22 @@ impl App {
             // 5. Terminal text.
             let (left, top) = (l.text.l, l.text.t);
             let mut text: Vec<u16> = Vec::with_capacity(term.cols() * 2);
+            let sel = self.sel.map(|(a, b)| if a <= b { (a, b) } else { (b, a) });
             for row in 0..term.rows() {
                 let line = term.line(row, offset);
                 let y = top + row as f32 * ch;
+                if let Some((sa, sb)) = sel {
+                    let abs = term.scrollback_len() - offset + row;
+                    if abs >= sa.0 && abs <= sb.0 {
+                        let c0 = if abs == sa.0 { sa.1 } else { 0 };
+                        let c1 = if abs == sb.0 { sb.1 + 1 } else { term.cols() };
+                        brush.SetColor(&D2D1_COLOR_F { a: 0.35, ..rgb(glow.colors[1]) });
+                        dc.FillRectangle(
+                            &D2D_RECT_F { left: left + c0 as f32 * cw, top: y, right: left + c1 as f32 * cw, bottom: y + ch },
+                            &brush,
+                        );
+                    }
+                }
                 let mut col = 0;
                 while col < line.len() {
                     let start = col;
@@ -1201,6 +1287,27 @@ fn pick_font(dwrite: &IDWriteFactory, names: &[&str]) -> Vec<u16> {
         }
     }
     wide(names.last().copied().unwrap_or("Consolas"))
+}
+
+unsafe fn set_clipboard_text(hwnd: HWND, text: &str) {
+    use windows::Win32::Foundation::HANDLE;
+    use windows::Win32::System::DataExchange::{EmptyClipboard, SetClipboardData};
+    use windows::Win32::System::Memory::{GlobalAlloc, GMEM_MOVEABLE};
+    let wide: Vec<u16> = text.replace('\n', "\r\n").encode_utf16().chain(Some(0)).collect();
+    if OpenClipboard(Some(hwnd)).is_err() {
+        return;
+    }
+    let _ = EmptyClipboard();
+    if let Ok(mem) = GlobalAlloc(GMEM_MOVEABLE, wide.len() * 2) {
+        let p = GlobalLock(mem) as *mut u16;
+        if !p.is_null() {
+            std::ptr::copy_nonoverlapping(wide.as_ptr(), p, wide.len());
+            let _ = GlobalUnlock(mem);
+            // On success the clipboard owns the memory.
+            let _ = SetClipboardData(CF_UNICODETEXT, Some(HANDLE(mem.0)));
+        }
+    }
+    let _ = CloseClipboard();
 }
 
 unsafe fn clipboard_text() -> Option<String> {
