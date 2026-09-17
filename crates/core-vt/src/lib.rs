@@ -91,6 +91,12 @@ pub struct Terminal {
     pub autowrap: bool,
     pub app_cursor_keys: bool,
     pub bracketed_paste: bool,
+    /// Mouse reporting the program asked for: 0 off, 1000 clicks, 1002 + drags, 1003 all motion.
+    pub mouse_tracking: u16,
+    /// Mouse reports use the SGR (?1006) encoding.
+    pub mouse_sgr: bool,
+    /// The program wants focus in/out reports (?1004).
+    pub focus_events: bool,
     pub title: String,
     pub marks: Vec<(usize, Mark)>,
     /// Bumped on every change so viewers know when to redraw.
@@ -106,6 +112,7 @@ pub struct Terminal {
     utf8_len: usize,
     utf8_need: usize,
     responses: Vec<u8>,
+    clipboard: Option<String>,
 }
 
 impl Terminal {
@@ -131,6 +138,10 @@ impl Terminal {
             autowrap: true,
             app_cursor_keys: false,
             bracketed_paste: false,
+            mouse_tracking: 0,
+            mouse_sgr: false,
+            focus_events: false,
+            clipboard: None,
             title: String::new(),
             marks: Vec::new(),
             generation: 0,
@@ -209,6 +220,11 @@ impl Terminal {
     pub fn row_text(&self, row: usize) -> String {
         let s: String = self.grid[row].iter().filter(|c| !c.spacer).map(|c| c.ch).collect();
         s.trim_end().to_string()
+    }
+
+    /// Text a program asked us to put on the clipboard (OSC 52), if any since last call.
+    pub fn take_clipboard(&mut self) -> Option<String> {
+        self.clipboard.take()
     }
 
     /// Bytes the shell asked for (cursor position reports, device attributes).
@@ -565,6 +581,16 @@ impl Terminal {
                 25 => self.cursor_visible = on,
                 47 | 1047 | 1049 => self.set_alt_screen(on),
                 2004 => self.bracketed_paste = on,
+                1000 | 1002 | 1003 => {
+                    let mode = self.params[i] as u16;
+                    if on {
+                        self.mouse_tracking = self.mouse_tracking.max(mode);
+                    } else if self.mouse_tracking == mode || mode == 1000 {
+                        self.mouse_tracking = 0;
+                    }
+                }
+                1006 => self.mouse_sgr = on,
+                1004 => self.focus_events = on,
                 _ => {}
             }
         }
@@ -652,6 +678,16 @@ impl Terminal {
         let (code, rest) = text.split_once(';').unwrap_or((text.as_str(), ""));
         match code {
             "0" | "2" => self.title = rest.to_string(),
+            "52" => {
+                // OSC 52 ; <targets> ; <base64>. Only writes are honoured; "?" (read) is ignored.
+                if let Some((_, data)) = rest.split_once(';') {
+                    if data != "?" {
+                        if let Some(bytes) = base64_decode(data) {
+                            self.clipboard = Some(String::from_utf8_lossy(&bytes).into_owned());
+                        }
+                    }
+                }
+            }
             "133" => {
                 let mut parts = rest.split(';');
                 let mark = match parts.next() {
@@ -872,6 +908,36 @@ impl Terminal {
     }
 }
 
+fn base64_decode(s: &str) -> Option<Vec<u8>> {
+    let val = |c: u8| -> Option<u32> {
+        Some(match c {
+            b'A'..=b'Z' => (c - b'A') as u32,
+            b'a'..=b'z' => (c - b'a' + 26) as u32,
+            b'0'..=b'9' => (c - b'0' + 52) as u32,
+            b'+' => 62,
+            b'/' => 63,
+            _ => return None,
+        })
+    };
+    let clean: Vec<u8> = s.bytes().filter(|b| !b.is_ascii_whitespace() && *b != b'=').collect();
+    let mut out = Vec::with_capacity(clean.len() * 3 / 4);
+    for chunk in clean.chunks(4) {
+        let mut acc = 0u32;
+        for &c in chunk {
+            acc = acc << 6 | val(c)?;
+        }
+        acc <<= 6 * (4 - chunk.len()) as u32;
+        let bytes = [(acc >> 16) as u8, (acc >> 8) as u8, acc as u8];
+        out.extend_from_slice(&bytes[..chunk.len().saturating_sub(1)]);
+    }
+    Some(out)
+}
+
+/// A mouse report in SGR form: button code, 1-based column and row, press or release.
+pub fn sgr_mouse(button: u8, col: usize, row: usize, pressed: bool) -> Vec<u8> {
+    format!("\x1b[<{};{};{}{}", button, col + 1, row + 1, if pressed { 'M' } else { 'm' }).into_bytes()
+}
+
 fn default_tabs(cols: usize) -> Vec<bool> {
     (0..cols).map(|c| c % 8 == 0 && c != 0).collect()
 }
@@ -967,6 +1033,20 @@ mod tests {
         assert_eq!(t.total_lines(), 3);
         assert_eq!(t.text_between((0, 1), (2, 2)), "ne\ntwo\nthr");
         assert_eq!(t.text_between((2, 2), (0, 1)), "ne\ntwo\nthr");
+    }
+
+    #[test]
+    fn mouse_modes_and_clipboard() {
+        let mut t = Terminal::new(10, 2);
+        t.feed(b"\x1b[?1002h\x1b[?1006h");
+        assert_eq!(t.mouse_tracking, 1002);
+        assert!(t.mouse_sgr);
+        t.feed(b"\x1b[?1002l");
+        assert_eq!(t.mouse_tracking, 0);
+        t.feed(b"\x1b]52;c;aGVsbG8gd29ybGQ=\x07");
+        assert_eq!(t.take_clipboard().as_deref(), Some("hello world"));
+        assert_eq!(t.take_clipboard(), None);
+        assert_eq!(sgr_mouse(0, 4, 2, true), b"\x1b[<0;5;3M");
     }
 
     #[test]
