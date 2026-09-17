@@ -98,7 +98,8 @@ struct App {
     cell_h: f32,
     layout: Layout,
     glow: usize,
-    settings_path: Option<std::path::PathBuf>,
+    /// This window's entry in the open-windows registry (holds its glow color).
+    registry_file: Option<std::path::PathBuf>,
     scroll_offset: usize,
     focused: bool,
     hover: Option<Button>,
@@ -150,11 +151,19 @@ pub fn run() {
         .as_ref()
         .and_then(|d| std::fs::OpenOptions::new().create(true).append(true).open(d.join("latency.log")).ok());
     let settings_path = data_dir.as_ref().map(|d| d.join("settings.txt"));
-    let glow = settings_path
+    let default_glow = settings_path
         .as_ref()
         .and_then(|p| std::fs::read_to_string(p).ok())
         .map(|t| theme::parse_settings(&t))
         .unwrap_or(0);
+    // Every open window gets its own glow color: look at the others first.
+    let registry = data_dir.as_ref().map(|d| d.join("windows"));
+    let glow = theme::pick_glow(default_glow, &registry.as_deref().map(live_window_glows).unwrap_or_default());
+    let registry_file = registry.as_ref().map(|d| d.join(std::process::id().to_string()));
+    if let Some(f) = &registry_file {
+        let _ = std::fs::create_dir_all(f.parent().unwrap());
+        let _ = std::fs::write(f, glow.to_string());
+    }
     // Test hook: TRINIDAD_HEAD_DUMP=path writes the visible screen there a few times a second.
     let dump_path = std::env::var_os("TRINIDAD_HEAD_DUMP").map(std::path::PathBuf::from);
 
@@ -243,7 +252,7 @@ pub fn run() {
             cell_h: 16.0,
             layout: Layout::new(1080.0, 700.0, 1.0, false),
             glow,
-            settings_path,
+            registry_file: registry_file.clone(),
             scroll_offset: 0,
             focused: true,
             hover: None,
@@ -286,6 +295,40 @@ pub fn run() {
         }
         APP.with(|a| a.borrow_mut().take());
     }
+    if let Some(f) = &registry_file {
+        let _ = std::fs::remove_file(f);
+    }
+}
+
+/// Glow colors used by other Trinidad Head windows that are still open. Entries left behind
+/// by windows that crashed are cleaned up here.
+fn live_window_glows(dir: &std::path::Path) -> Vec<usize> {
+    use windows::Win32::System::Threading::{GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
+    const STILL_ACTIVE: u32 = 259;
+    let mut used = Vec::new();
+    let Ok(entries) = std::fs::read_dir(dir) else { return used };
+    for e in entries.flatten() {
+        let Some(pid) = e.file_name().to_str().and_then(|n| n.parse::<u32>().ok()) else { continue };
+        let alive = unsafe {
+            match OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) {
+                Ok(h) => {
+                    let mut code = 0u32;
+                    let ok = GetExitCodeProcess(h, &mut code).is_ok() && code == STILL_ACTIVE;
+                    let _ = windows::Win32::Foundation::CloseHandle(h);
+                    ok
+                }
+                Err(_) => false,
+            }
+        };
+        if !alive {
+            let _ = std::fs::remove_file(e.path());
+            continue;
+        }
+        if let Some(g) = std::fs::read_to_string(e.path()).ok().and_then(|t| t.trim().parse::<usize>().ok()) {
+            used.push(g);
+        }
+    }
+    used
 }
 
 fn reader_loop(mut output: std::fs::File, shared: Arc<Mutex<Shared>>, pty: Arc<Mutex<Pty>>, hwnd_raw: isize) {
@@ -560,10 +603,11 @@ impl App {
                     let _ = std::process::Command::new("explorer.exe").arg(home).spawn();
                 }
                 Button::Glow => {
+                    // Changes this window only; other windows and the default stay as they are.
                     self.glow = (self.glow + 1) % GLOWS.len();
                     self.glow_cache = None;
-                    if let Some(p) = &self.settings_path {
-                        let _ = std::fs::write(p, theme::settings_text(self.glow));
+                    if let Some(p) = &self.registry_file {
+                        let _ = std::fs::write(p, self.glow.to_string());
                     }
                 }
             }

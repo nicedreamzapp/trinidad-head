@@ -14,12 +14,28 @@ impl Glow {
     }
 }
 
-pub const GLOWS: [Glow; 4] = [
+pub const GLOWS: [Glow; 8] = [
     Glow { name: "aurora", colors: [0x3FD8FF, 0x5B6CFF, 0xB44DFF, 0xFF4FD8] },
     Glow { name: "ember", colors: [0xFFB45A, 0xFF7A1A, 0xFF4D1A, 0xFF9A3C] },
-    Glow { name: "ocean", colors: [0x6FE6FF, 0x2F9BFF, 0x1B4DFF, 0x00C8FF] },
     Glow { name: "tide", colors: [0x7FFFD0, 0x14D6A0, 0x10A8C8, 0x2FE0FF] },
+    Glow { name: "rose", colors: [0xFF9AC8, 0xFF4F9A, 0xD9368B, 0xFF7AB0] },
+    Glow { name: "ocean", colors: [0x6FE6FF, 0x2F9BFF, 0x1B4DFF, 0x00C8FF] },
+    Glow { name: "gold", colors: [0xFFE27A, 0xF5B82E, 0xE0901A, 0xFFD24D] },
+    Glow { name: "violet", colors: [0xC9A2FF, 0x8A4DFF, 0x6A2FE0, 0xB07BFF] },
+    Glow { name: "lime", colors: [0xD4FF7A, 0x8FE03A, 0x4CC23A, 0xB8F55A] },
 ];
+
+/// The glow for a new window: the saved default if no other open window uses it, otherwise
+/// the next color (in list order) that no open window is using. With every color taken,
+/// colors repeat, starting again from the default.
+pub fn pick_glow(default: usize, in_use: &[usize]) -> usize {
+    let n = GLOWS.len();
+    let default = default % n;
+    (0..n)
+        .map(|k| (default + k) % n)
+        .find(|g| !in_use.contains(g))
+        .unwrap_or((default + in_use.len()) % n)
+}
 
 /// Background of the window body (near-black glass).
 pub const BODY: u32 = 0x090B18;
@@ -54,6 +70,7 @@ pub fn parse_settings(text: &str) -> usize {
         .unwrap_or(0)
 }
 
+#[cfg_attr(windows, allow(dead_code))]
 pub fn settings_text(glow: usize) -> String {
     format!("# Trinidad Head settings\nglow={}\n", GLOWS[glow % GLOWS.len()].name)
 }
@@ -80,9 +97,19 @@ mod tests {
     }
 
     #[test]
+    fn each_window_gets_its_own_color() {
+        assert_eq!(pick_glow(0, &[]), 0);
+        assert_eq!(pick_glow(0, &[0]), 1);
+        assert_eq!(pick_glow(0, &[0, 1, 3]), 2);
+        assert_eq!(pick_glow(2, &[2]), 3);
+        let all: Vec<usize> = (0..GLOWS.len()).collect();
+        assert!(pick_glow(0, &all) < GLOWS.len());
+    }
+
+    #[test]
     fn round_trips_and_defaults() {
         assert_eq!(parse_settings(""), 0);
-        assert_eq!(parse_settings("glow=ocean"), 2);
+        assert_eq!(parse_settings("glow=tide"), 2);
         assert_eq!(parse_settings(&settings_text(3)), 3);
         assert_eq!(parse_settings("glow=nonsense"), 0);
     }
