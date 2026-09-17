@@ -1030,6 +1030,25 @@ impl App {
                 self.icon(&dc, &brush, glyph, x, y, false);
             }
 
+            // Resize grip: three short diagonal strokes, like the corner of a window you can drag.
+            if !l.maximized {
+                let (gx, gy) = l.grip();
+                brush.SetColor(&D2D1_COLOR_F { a: if self.focused { 0.8 } else { 0.45 }, ..rgb(0xE6E9FF) });
+                for i in 0..3 {
+                    let o = (i as f32 - 1.0) * 6.0 * s;
+                    let len = (9.0 - 2.5 * i as f32) * s;
+                    // Each stroke runs up and to the right, stacked toward the corner.
+                    let (cx, cy) = (gx + o, gy + o);
+                    let _ = dc.DrawLine(
+                        Vector2 { X: cx - len, Y: cy + len },
+                        Vector2 { X: cx + len, Y: cy - len },
+                        &brush,
+                        2.0 * s,
+                        None,
+                    );
+                }
+            }
+
             // 5. Terminal text.
             let (left, top) = (l.text.l, l.text.t);
             let mut text: Vec<u16> = Vec::with_capacity(term.cols() * 2);

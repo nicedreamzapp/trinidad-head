@@ -133,6 +133,12 @@ impl Layout {
         }
     }
 
+    /// The resize grip: a spot just inside the bottom-right curve.
+    pub fn grip(&self) -> (f32, f32) {
+        let k = self.radius * (1.0 - std::f32::consts::FRAC_1_SQRT_2) + 22.0 * self.scale;
+        (self.body.r - k, self.body.b - k)
+    }
+
     pub fn button_at(&self, x: f32, y: f32) -> Option<Button> {
         BUTTONS.into_iter().find(|&b| {
             let (cx, cy, r) = self.button(b);
@@ -146,6 +152,10 @@ impl Layout {
         if !self.maximized {
             let s = self.scale;
             let e = 6.0 * s;
+            let (gx, gy) = self.grip();
+            if (x - gx).powi(2) + (y - gy).powi(2) < (18.0 * s).powi(2) {
+                return Hit::BottomRight;
+            }
             let (l, r, t, b) = (
                 x < self.body.l + e,
                 x >= self.body.r - e,
@@ -276,6 +286,9 @@ mod tests {
         assert_eq!(l.hit(500.0, 620.0), Hit::Bottom);
         assert_eq!(l.hit(500.0, 70.0), Hit::Caption);
         assert_eq!(l.hit(500.0, 300.0), Hit::Client);
+        let (gx, gy) = l.grip();
+        assert!(l.in_body(gx, gy));
+        assert_eq!(l.hit(gx, gy), Hit::BottomRight);
         let (cx, cy, _) = l.button(Button::Close);
         assert_eq!(l.button_at(cx, cy), Some(Button::Close));
         assert_eq!(l.hit(cx, cy), Hit::Client);
