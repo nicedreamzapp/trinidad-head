@@ -92,6 +92,22 @@ fn later(wait: f64, f: impl Fn() + 'static) {
     }
 }
 
+/// Write a PNG of the whole window (glow included) a few seconds after launch.
+pub fn shot_later(view: Retained<TermView>, path: std::path::PathBuf) {
+    later(3.0, move || {
+        let rect = view.bounds();
+        if let Some(rep) = view.bitmapImageRepForCachingDisplayInRect(rect) {
+            view.cacheDisplayInRect_toBitmapImageRep(rect, &rep);
+            let data = unsafe {
+                rep.representationUsingType_properties(objc2_app_kit::NSBitmapImageFileType::PNG, &objc2_foundation::NSDictionary::new())
+            };
+            if let Some(data) = data {
+                let _ = std::fs::write(&path, data.to_vec());
+            }
+        }
+    });
+}
+
 fn run(ctx: Rc<Ctx>, steps: Rc<Vec<Step>>, i: usize, tries_left: u32) {
     let Some(step) = steps.get(i) else { return };
     match step {

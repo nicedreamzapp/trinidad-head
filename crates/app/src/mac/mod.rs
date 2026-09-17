@@ -244,6 +244,10 @@ pub fn run() {
     if let Ok(mode) = std::env::var("TRINIDAD_HEAD_SELFTEST") {
         selftest::start(&mode, window.retain(), view.clone());
     }
+    if let Some(path) = std::env::var_os("TRINIDAD_HEAD_SHOT") {
+        // Test hook: a picture of the window, drawn by the view itself (no Screen Recording needed).
+        selftest::shot_later(view.clone(), std::path::PathBuf::from(path));
+    }
     app.run();
 }
 

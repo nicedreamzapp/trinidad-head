@@ -6,7 +6,7 @@ use objc2_core_graphics::{
     kCGColorSpaceSRGB, CGColor, CGColorSpace, CGContext, CGGradient, CGGradientDrawingOptions, CGLineCap,
 };
 
-use crate::layout::{outline, Button, Layout, Rect};
+use crate::layout::{outline, Button, Layout, Rect, GLASS};
 use crate::theme::{self, GLOWS};
 
 pub fn rgba(hex: u32, a: f64) -> [CGFloat; 4] {
@@ -66,9 +66,17 @@ fn fill_gradient(c: &CGContext, pts: &[(f32, f32)], g: &CGGradient, from: CGPoin
     CGContext::restore_g_state(Some(c));
 }
 
-fn rim(glow: usize, alpha: f64) -> Option<objc2_core_foundation::CFRetained<CGGradient>> {
-    let [c0, c1, c2, c3] = GLOWS[glow].colors;
-    gradient(&[(rgba(c0, alpha), 0.0), (rgba(c1, alpha), 0.30), (rgba(c2, alpha), 0.62), (rgba(c3, alpha), 1.0)])
+/// Look 06's rim: the glow's light color hot at both ends, dimmer across the middle.
+fn rim06(glow: usize, alpha: f64) -> Option<objc2_core_foundation::CFRetained<CGGradient>> {
+    let [c0, c1, _, c3] = GLOWS[glow].colors;
+    gradient(&[
+        (rgba(c0, alpha), 0.0),
+        (rgba(c1, alpha), 0.12),
+        (rgba(c1, alpha * 0.45), 0.36),
+        (rgba(c1, alpha * 0.45), 0.64),
+        (rgba(c3, alpha), 0.88),
+        (rgba(c0, alpha), 1.0),
+    ])
 }
 
 fn pill_path(c: &CGContext, r: Rect) {
@@ -91,69 +99,96 @@ pub fn chrome(c: &CGContext, l: &Layout, st: &ChromeState) {
     let b = l.body;
     let tl = CGPoint::new(b.l as f64, b.t as f64);
     let br = CGPoint::new(b.r as f64, b.b as f64);
-    let wobble = if l.maximized { 0.0 } else { 5.0 };
-    let shape = outline(l, 0.0, wobble, 480);
-    let inner = outline(l, 5.0, wobble, 480);
+    // Look 06 is smooth glass, not the old rippled outline.
+    let shape = outline(l, 0.0, 0.0, 480);
     let strength = if st.focused { 1.0 } else { 0.5 };
 
-    // 1. Bloom and the pool of light under the window: wide, faint rim strokes.
+    // Look 06 (Matt, 2026-09-17): thick black glass, a thin neon rim that burns brightest at the
+    // left and right ends, a faint glow, and a glossy sheen along the top.
+    let across = |a: f64| rim06(st.glow, a);
+    let (lx, rx) = (CGPoint::new(b.l as f64, 0.0), CGPoint::new(b.r as f64, 0.0));
+
+    // 1. Faint glow around the rim and a soft pool of light under the window.
     if !l.maximized {
-        // Many thin layers stacked from wide to narrow approximate the Windows build's blur.
-        for i in 0..12 {
-            let w = 44.0 - i as f64 * 3.2;
-            if let Some(g) = rim(st.glow, 0.026 * (0.4 + 0.6 * strength)) {
-                stroke_gradient(c, &shape, w, &g, tl, br);
+        for i in 0..6 {
+            let w = 22.0 - i as f64 * 3.2;
+            if let Some(g) = across(0.035 * (0.4 + 0.6 * strength)) {
+                stroke_gradient(c, &shape, w, &g, lx, rx);
             }
         }
-        if let Some(g) = rim(st.glow, 1.0) {
-            let (cx, cy) = (b.cx() as f64, b.b as f64 + 14.0);
-            for (rx, ry, a) in [(0.40, 14.0, 0.06), (0.34, 9.0, 0.10), (0.26, 5.0, 0.14)] {
-                let rx = b.w() as f64 * rx;
+        if let Some(g) = across(1.0) {
+            let (cx, cy) = (b.cx() as f64, b.b as f64 + 10.0);
+            for (rxf, ry, a) in [(0.40, 10.0, 0.035), (0.30, 6.0, 0.06)] {
+                let rr = b.w() as f64 * rxf;
                 CGContext::save_g_state(Some(c));
                 CGContext::begin_path(Some(c));
-                CGContext::add_ellipse_in_rect(Some(c), cgrect(cx - rx, cy - ry, cx + rx, cy + ry));
+                CGContext::add_ellipse_in_rect(Some(c), cgrect(cx - rr, cy - ry, cx + rr, cy + ry));
                 CGContext::clip(Some(c));
                 CGContext::set_alpha(Some(c), a);
-                CGContext::draw_linear_gradient(
-                    Some(c),
-                    Some(&g),
-                    CGPoint::new(b.l as f64, 0.0),
-                    CGPoint::new(b.r as f64, 0.0),
-                    CGGradientDrawingOptions::empty(),
-                );
+                CGContext::draw_linear_gradient(Some(c), Some(&g), lx, rx, CGGradientDrawingOptions::empty());
                 CGContext::restore_g_state(Some(c));
             }
         }
     }
 
-    // 2. Deep glass: dark base, then soft color from two corners (half strength).
-    add_outline(c, &shape);
+    // 2. The glass: charcoal at the top fading to black, then the sunken window inside it.
+    let window = outline(l, GLASS, 0.0, 480);
+    if let Some(g) = gradient(&[
+        (rgba(0x2A2A31, 0.98), 0.0),
+        (rgba(0x0E0E12, 0.98), 0.22),
+        (rgba(0x08080B, 0.98), 0.8),
+        (rgba(0x16110D, 0.98), 1.0),
+    ]) {
+        fill_gradient(c, &shape, &g, CGPoint::new(0.0, b.t as f64), CGPoint::new(0.0, b.b as f64));
+    }
+    // Colored light caught inside the glass at both ends.
+    if let Some(g) = across(0.22 * strength) {
+        stroke_gradient(c, &shape, GLASS as f64 * 2.4, &g, lx, rx);
+    }
+    add_outline(c, &window);
     set_fill(c, rgba(theme::BODY, theme::BODY_OPACITY as f64));
     CGContext::fill_path(Some(c));
     if let Some(g) = gradient(&[
-        (rgba(theme::TINT_A, 0.375), 0.0),
+        (rgba(theme::TINT_A, 0.2), 0.0),
         (rgba(theme::TINT_A, 0.0), 0.45),
         (rgba(theme::TINT_B, 0.0), 0.62),
-        (rgba(theme::TINT_B, 0.35), 1.0),
+        (rgba(theme::TINT_B, 0.18), 1.0),
     ]) {
-        fill_gradient(c, &shape, &g, tl, br);
+        fill_gradient(c, &window, &g, tl, br);
     }
+    // The window's edge sits in shadow, with a hairline of glass light.
+    for (w, a) in [(5.0, 0.55), (2.0, 0.8)] {
+        add_outline(c, &window);
+        set_stroke(c, rgba(0x000000, a));
+        CGContext::set_line_width(Some(c), w);
+        CGContext::stroke_path(Some(c));
+    }
+    add_outline(c, &outline(l, GLASS - 0.5, 0.0, 480));
+    set_stroke(c, rgba(0xFFFFFF, 0.07));
+    CGContext::set_line_width(Some(c), 1.0);
+    CGContext::stroke_path(Some(c));
 
-    // 3. The glass tube: wide soft band, brighter band, hot core line.
-    for (w, a) in [(22.0, 0.16), (7.0, 0.5), (2.0, 1.0)] {
-        if let Some(g) = rim(st.glow, a * strength) {
-            stroke_gradient(c, &shape, w, &g, tl, br);
+    // 3. The neon rim: a soft band and a hot core line, then a pale inner hairline.
+    for (w, a) in [(4.5, 0.45), (1.8, 1.0)] {
+        if let Some(g) = across(a * strength) {
+            stroke_gradient(c, &shape, w, &g, lx, rx);
         }
     }
-
-    // 4. Specular glints along the inside edge.
-    if let Some(g) = gradient(&[(rgba(0xFFFFFF, 0.85), 0.0), (rgba(0xFFFFFF, 0.0), 1.0)]) {
-        let to = CGPoint::new(b.l as f64 + b.w() as f64 * 0.25, b.t as f64 + b.h() as f64 * 0.45);
-        stroke_gradient(c, &inner, 1.6, &g, tl, to);
+    if let Some(g) = gradient(&[(rgba(0xFFE9D2, 0.0), 0.0), (rgba(0xFFE9D2, 0.55 * strength), 0.5), (rgba(0xFFE9D2, 0.0), 1.0)]) {
+        let edge = outline(l, 1.6, 0.0, 480);
+        stroke_gradient(c, &edge, 0.8, &g, CGPoint::new(0.0, b.t as f64), CGPoint::new(0.0, b.b as f64));
     }
-    if let Some(g) = gradient(&[(rgba(0xFFFFFF, 0.45), 0.0), (rgba(0xFFFFFF, 0.0), 1.0)]) {
-        let to = CGPoint::new(b.r as f64 - b.w() as f64 * 0.2, b.b as f64 - b.h() as f64 * 0.4);
-        stroke_gradient(c, &inner, 1.2, &g, br, to);
+    // The top of the tube is turned away from the light.
+    if let Some(g) = gradient(&[(rgba(0x000000, 0.5), 0.0), (rgba(0x000000, 0.0), 1.0)]) {
+        let to = CGPoint::new(0.0, b.t as f64 + b.h() as f64 * 0.4);
+        stroke_gradient(c, &shape, 5.0, &g, CGPoint::new(0.0, b.t as f64), to);
+    }
+
+    // 4. Gloss: a soft sheen across the top of the glass.
+    if let Some(g) = gradient(&[(rgba(0xFFFFFF, 0.16), 0.0), (rgba(0xFFFFFF, 0.0), 1.0)]) {
+        let sheen = outline(l, GLASS * 0.45, 0.0, 480);
+        let to = CGPoint::new(0.0, b.t as f64 + l.radius as f64 * 0.9);
+        stroke_gradient(c, &sheen, GLASS as f64 * 0.5, &g, CGPoint::new(0.0, b.t as f64), to);
     }
 
     // 5. Glass pills for the window buttons and the sidebar.

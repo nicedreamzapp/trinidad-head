@@ -55,6 +55,13 @@ pub const BUTTONS: [Button; 6] = [
 /// straight onto the window, so the terminal and folder icons were just clutter.
 pub const SIDEBAR: &[Button] = &[Button::Glow];
 
+/// Transparent room around the body for the glow (and the resize border), and below it for the
+/// light on the "floor".
+pub const MARGIN: f32 = 26.0;
+pub const FLOOR: f32 = 40.0;
+/// How thick the black glass band inside the rim is.
+pub const GLASS: f32 = 10.0;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Hit {
     Client,
@@ -87,7 +94,8 @@ impl Layout {
         let s = scale;
         // Extra room underneath for the light the window casts on the "floor".
         // The glow has to fade out completely before the window's real (square) edge, or the cut-off shows.
-        let (margin, floor) = if maximized { (0.0, 0.0) } else { (46.0 * s, 66.0 * s) };
+        // Look 06 (2026-09-17): a thin rim with a faint glow needs far less room than the old bloom.
+        let (margin, floor) = if maximized { (0.0, 0.0) } else { (MARGIN * s, FLOOR * s) };
         let window = Rect { l: 0.0, t: 0.0, r: w, b: h };
         let body = Rect { l: margin, t: margin, r: (w - margin).max(margin + 1.0), b: (h - floor).max(margin + 1.0) };
         let radius = if maximized { 0.0 } else { (72.0 * s).min(body.h() / 2.0).min(body.w() / 2.0) };
@@ -275,11 +283,11 @@ mod tests {
     #[test]
     fn edges_corners_caption_and_buttons() {
         let l = Layout::new(1000.0, 640.0, 1.0, false);
-        assert_eq!(l.hit(48.0, 320.0), Hit::Left);
-        assert_eq!(l.hit(952.0, 320.0), Hit::Right);
+        assert_eq!(l.hit(28.0, 320.0), Hit::Left);
+        assert_eq!(l.hit(972.0, 320.0), Hit::Right);
         assert_eq!(l.hit(500.0, 5.0), Hit::Top);
-        assert_eq!(l.hit(50.0, 50.0), Hit::TopLeft);
-        assert_eq!(l.hit(952.0, 576.0), Hit::BottomRight);
+        assert_eq!(l.hit(30.0, 30.0), Hit::TopLeft);
+        assert_eq!(l.hit(972.0, 598.0), Hit::BottomRight);
         assert_eq!(l.hit(500.0, 620.0), Hit::Bottom);
         assert_eq!(l.hit(500.0, 70.0), Hit::Caption);
         assert_eq!(l.hit(500.0, 300.0), Hit::Client);
