@@ -51,6 +51,13 @@ pub const BUTTONS: [Button; 6] = [
     Button::Glow,
 ];
 
+/// The sidebar's buttons, top to bottom. The Mac has only the glow (color) button: files are
+/// dropped straight onto the window there, so the terminal and folder icons were just clutter.
+#[cfg(not(target_os = "macos"))]
+pub const SIDEBAR: &[Button] = &[Button::Terminal, Button::Folder, Button::Glow];
+#[cfg(target_os = "macos")]
+pub const SIDEBAR: &[Button] = &[Button::Glow];
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Hit {
     Client,
@@ -93,7 +100,7 @@ impl Layout {
         let lights_pill = Rect::new(body.l + 58.0 * s, top, 74.0 * s, pill_h);
 
         let side_w = 40.0 * s;
-        let side_h = (3.0 * 40.0 * s + 12.0 * s).min(body.h() - 90.0 * s).max(side_w);
+        let side_h = (SIDEBAR.len() as f32 * 40.0 * s + 12.0 * s).min(body.h() - 90.0 * s).max(side_w);
         let sidebar = Rect::new(body.l + 16.0 * s, body.cy() - side_h / 2.0 + 14.0 * s, side_w, side_h);
 
         let text = Rect {
@@ -115,9 +122,11 @@ impl Layout {
             Button::Close => (lp.l + 16.0 * s, lp.cy(), 6.0 * s),
             Button::Minimize => (lp.l + 37.0 * s, lp.cy(), 6.0 * s),
             Button::Zoom => (lp.l + 58.0 * s, lp.cy(), 6.0 * s),
-            Button::Terminal => (sb.cx(), slot(0.0), 15.0 * s),
-            Button::Folder => (sb.cx(), slot(1.0), 15.0 * s),
-            Button::Glow => (sb.cx(), slot(2.0), 15.0 * s),
+            side => match SIDEBAR.iter().position(|&b| b == side) {
+                Some(i) => (sb.cx(), slot(i as f32), 15.0 * s),
+                // Not on this platform's sidebar: nowhere, so it can't be hit.
+                None => (-10_000.0, -10_000.0, 0.0),
+            },
         }
     }
 
@@ -130,6 +139,9 @@ impl Layout {
     pub fn button_at(&self, x: f32, y: f32) -> Option<Button> {
         BUTTONS.into_iter().find(|&b| {
             let (cx, cy, r) = self.button(b);
+            if r == 0.0 {
+                return false; // not on this platform
+            }
             // Small targets get a finger-friendly minimum.
             let r = r.max(9.0 * self.scale) + 2.0 * self.scale;
             (x - cx).powi(2) + (y - cy).powi(2) <= r * r

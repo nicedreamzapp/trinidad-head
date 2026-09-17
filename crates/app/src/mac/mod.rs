@@ -5,6 +5,7 @@ mod control;
 mod keys;
 mod paint;
 mod selftest;
+mod textutil;
 mod view;
 
 use std::io::Read;

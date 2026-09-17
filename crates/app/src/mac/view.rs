@@ -63,6 +63,15 @@ pub struct ViewState {
     frames: u64,
     /// The folder button opened a folder (self-test check).
     folder_opened: bool,
+    /// A press the program wants, held back until we know it is a click (sent to the program)
+    /// and not a drag (a text selection here): screen cell, modifier bits, text point.
+    pending_press: Option<((usize, usize), u8, (usize, usize))>,
+    /// The right-click menu currently or last shown, and the link it was opened over.
+    menu: Option<Retained<NSMenu>>,
+    menu_link: Option<String>,
+    /// Right-click menus shown so far, and the last link opened (self-test checks).
+    menus_shown: u32,
+    link_opened: Option<String>,
 }
 
 define_class!(
@@ -245,6 +254,24 @@ define_class!(
         #[unsafe(method(copy:))]
         fn copy_action(&self, _sender: Option<&AnyObject>) {
             self.copy_and_clear();
+        }
+
+        #[unsafe(method(openLink:))]
+        fn open_link_action(&self, _sender: Option<&AnyObject>) {
+            let link = self.ivars().borrow().menu_link.clone();
+            if let Some(link) = link {
+                self.open_link(&link);
+            }
+        }
+
+        #[unsafe(method(copyLink:))]
+        fn copy_link_action(&self, _sender: Option<&AnyObject>) {
+            let link = self.ivars().borrow().menu_link.clone();
+            if let Some(link) = link {
+                let pb = NSPasteboard::generalPasteboard();
+                pb.clearContents();
+                pb.setString_forType(&NSString::from_str(&link), unsafe { NSPasteboardTypeString });
+            }
         }
 
         #[unsafe(method(paste:))]
@@ -486,6 +513,11 @@ impl TermView {
             last_mouse_cell: None,
             frames: 0,
             folder_opened: false,
+            pending_press: None,
+            menu: None,
+            menu_link: None,
+            menus_shown: 0,
+            link_opened: None,
         };
         let this = Self::alloc(mtm).set_ivars(RefCell::new(state));
         let this: Retained<Self> = unsafe { msg_send![super(this), initWithFrame: frame] };
@@ -651,18 +683,40 @@ impl TermView {
         self.setNeedsDisplay(true);
     }
 
-    /// Right-click menu: Copy, Paste, Select All. Nothing is copied or pasted until one is picked.
+    /// Right-click (or Control-click) menu: Open Link / Copy Link over a link, then Copy,
+    /// Paste, Select All. Nothing is copied or pasted until one is picked.
     fn context_menu(&self, event: &NSEvent) {
+        let (x, y) = self.point(event);
+        let link = self.link_at(x, y);
+        let menu = self.build_menu(link);
+        {
+            let mut st = self.ivars().borrow_mut();
+            st.menu = Some(menu.clone());
+            st.menus_shown += 1;
+        }
+        NSMenu::popUpContextMenu_withEvent_forView(&menu, event, self);
+    }
+
+    fn build_menu(&self, link: Option<String>) -> Retained<NSMenu> {
         let mtm = self.mtm();
         let has_sel = matches!(self.ivars().borrow().sel, Some((a, b)) if a != b);
         let has_clip = NSPasteboard::generalPasteboard().stringForType(unsafe { NSPasteboardTypeString }).is_some();
         let menu = NSMenu::new(mtm);
         menu.setAutoenablesItems(false);
-        for (title, action, enabled) in [
-            (ns_string!("Copy"), sel!(copy:), has_sel),
-            (ns_string!("Paste"), sel!(paste:), has_clip),
-            (ns_string!("Select All"), sel!(selectAll:), true),
-        ] {
+        let mut items = Vec::new();
+        if link.is_some() {
+            items.push((ns_string!("Open Link"), Some(sel!(openLink:)), true));
+            items.push((ns_string!("Copy Link"), Some(sel!(copyLink:)), true));
+            items.push((ns_string!(""), None, false));
+        }
+        items.push((ns_string!("Copy"), Some(sel!(copy:)), has_sel));
+        items.push((ns_string!("Paste"), Some(sel!(paste:)), has_clip));
+        items.push((ns_string!("Select All"), Some(sel!(selectAll:)), true));
+        for (title, action, enabled) in items {
+            let Some(action) = action else {
+                menu.addItem(&NSMenuItem::separatorItem(mtm));
+                continue;
+            };
             let item = unsafe {
                 NSMenuItem::initWithTitle_action_keyEquivalent(mtm.alloc(), title, Some(action), ns_string!(""))
             };
@@ -670,7 +724,81 @@ impl TermView {
             item.setEnabled(enabled);
             menu.addItem(&item);
         }
-        NSMenu::popUpContextMenu_withEvent_forView(&menu, event, self);
+        self.ivars().borrow_mut().menu_link = link;
+        menu
+    }
+
+    /// The last right-click menu's items as (title, enabled), and how many menus were shown.
+    pub fn menu_state(&self) -> (u32, Vec<(String, bool)>) {
+        let st = self.ivars().borrow();
+        let items = st
+            .menu
+            .as_ref()
+            .map(|m| m.itemArray().iter().map(|i| (i.title().to_string(), i.isEnabled())).collect())
+            .unwrap_or_default();
+        (st.menus_shown, items)
+    }
+
+    pub fn cancel_menu(&self) {
+        let menu = self.ivars().borrow().menu.clone();
+        if let Some(m) = menu {
+            m.cancelTrackingWithoutAnimation();
+        }
+    }
+
+    pub fn link_opened(&self) -> Option<String> {
+        self.ivars().borrow().link_opened.clone()
+    }
+
+    pub fn has_selection(&self) -> bool {
+        matches!(self.ivars().borrow().sel, Some((a, b)) if a != b)
+    }
+
+    /// The web link under a point in the text area, following it across wrapped rows.
+    fn link_at(&self, x: f32, y: f32) -> Option<String> {
+        if !self.ivars().borrow().layout.text.contains(x, y) {
+            return None;
+        }
+        let (line_i, col) = self.cell_at(x, y);
+        let st = self.ivars().borrow();
+        let s = st.shared.lock().unwrap();
+        let term = &s.term;
+        let chars = |i: usize| -> Vec<char> {
+            term.abs_line(i).iter().map(|c| if c.spacer { '\0' } else { c.ch }).collect()
+        };
+        let joins = |a: &[char], b: &[char]| {
+            a.len() >= term.cols()
+                && a.last().is_some_and(|c| !c.is_whitespace() && *c != '\0')
+                && b.first().is_some_and(|c| !c.is_whitespace() && *c != '\0')
+        };
+        let mut first = line_i;
+        while first > 0 && line_i - first < 4 && joins(&chars(first - 1), &chars(first)) {
+            first -= 1;
+        }
+        let mut last = line_i;
+        while last + 1 < term.total_lines() && last - line_i < 4 && joins(&chars(last), &chars(last + 1)) {
+            last += 1;
+        }
+        let mut all = Vec::new();
+        let mut at = col;
+        for i in first..=last {
+            let c = chars(i);
+            if i < line_i {
+                at += c.len();
+            }
+            all.extend(c);
+        }
+        super::textutil::url_at(&all, at)
+    }
+
+    fn open_link(&self, link: &str) {
+        self.ivars().borrow_mut().link_opened = Some(link.to_string());
+        if std::env::var_os("TRINIDAD_HEAD_SELFTEST").is_some() {
+            return;
+        }
+        if let Some(url) = NSURL::URLWithString(&NSString::from_str(link)) {
+            NSWorkspace::sharedWorkspace().openURL(&url);
+        }
     }
 
     fn paste(&self) {
@@ -822,15 +950,31 @@ impl TermView {
                 }
             }
             Hit::Client => {
-                let shift = event.modifierFlags().contains(NSEventModifierFlags::Shift);
+                let flags = event.modifierFlags();
+                let shift = flags.contains(NSEventModifierFlags::Shift);
                 let in_text = self.ivars().borrow().layout.text.contains(x, y);
+                if in_text && flags.contains(NSEventModifierFlags::Command) {
+                    // Cmd+click opens a link.
+                    if let Some(link) = self.link_at(x, y) {
+                        self.open_link(&link);
+                    }
+                    return;
+                }
+                if flags.contains(NSEventModifierFlags::Control) {
+                    // Control-click is a right-click on a Mac.
+                    self.context_menu(event);
+                    return;
+                }
                 if in_text && !shift && self.mouse_mode().0 != 0 {
-                    // The program handles the mouse (e.g. Claude Code's full-screen view).
+                    // The program handles clicks (e.g. Claude Code's full-screen view), but a
+                    // drag still selects text here. Hold the press until we know which it is.
                     let cell = self.screen_cell(x, y);
-                    self.report_mouse(Self::mouse_mods(event), cell, true);
+                    let p = self.cell_at(x, y);
                     let mut st = self.ivars().borrow_mut();
-                    st.mouse_reported = true;
-                    st.last_mouse_cell = Some(cell);
+                    st.pending_press = Some((cell, Self::mouse_mods(event), p));
+                    st.sel = None;
+                    drop(st);
+                    self.setNeedsDisplay(true);
                     return;
                 }
                 if in_body {
@@ -893,6 +1037,20 @@ impl TermView {
             }
             return;
         }
+        let pending = self.ivars().borrow().pending_press;
+        if let Some((cell, _, p)) = pending {
+            let (x, y) = self.point(event);
+            if self.screen_cell(x, y) != cell {
+                let q = self.cell_at(x, y);
+                let mut st = self.ivars().borrow_mut();
+                st.pending_press = None;
+                st.sel = Some((p, q));
+                st.selecting = true;
+                drop(st);
+                self.setNeedsDisplay(true);
+            }
+            return;
+        }
         if self.ivars().borrow().mouse_reported {
             let (x, y) = self.point(event);
             let cell = self.screen_cell(x, y);
@@ -917,6 +1075,13 @@ impl TermView {
     fn on_mouse_up(&self, event: &NSEvent) {
         let (x, y) = self.point(event);
         if self.ivars().borrow_mut().resizing.take().is_some() {
+            return;
+        }
+        let pending = self.ivars().borrow_mut().pending_press.take();
+        if let Some((cell, mods, _)) = pending {
+            // It never moved off its cell: a plain click, which the program gets.
+            self.report_mouse(mods, cell, true);
+            self.report_mouse(mods, cell, false);
             return;
         }
         if std::mem::take(&mut self.ivars().borrow_mut().mouse_reported) {
@@ -1027,6 +1192,13 @@ impl TermView {
         };
         let cursor = match pos {
             Some(p) => NSCursor::frameResizeCursorFromPosition_inDirections(p, NSCursorFrameResizeDirections::All),
+            None if in_text
+                && hover.is_none()
+                && event.modifierFlags().contains(NSEventModifierFlags::Command)
+                && self.link_at(x, y).is_some() =>
+            {
+                NSCursor::pointingHandCursor()
+            }
             None if in_text && hover.is_none() => NSCursor::IBeamCursor(),
             None => NSCursor::arrowCursor(),
         };
@@ -1119,6 +1291,7 @@ impl TermView {
         self.ivars().borrow().frames
     }
 
+    #[allow(dead_code)]
     pub(super) fn folder_opened(&self) -> bool {
         self.ivars().borrow().folder_opened
     }
@@ -1280,10 +1453,27 @@ impl TermView {
             let width = if cell.wide { 2.0 * cw } else { cw };
             let accent = rgba(glow.accent(), 1.0);
             if !st.marked.is_empty() {
-                let w = st.marked.chars().count() as f64 * cw;
-                paint::fill_rect(&cg, x, y, x + w, y + ch, rgba(theme::BODY, 1.0));
-                draw_run(&st.fonts, &st.marked, &Attrs::default(), default_fg, x, y);
-                paint::fill_rect(&cg, x, y + ch - 2.0, x + w, y + ch - 1.0, accent);
+                // Dictation / input-method text wraps inside the window instead of running off
+                // the edge: the first line starts at the cursor, the rest at the left margin,
+                // and the block moves up if it would drop below the bottom.
+                let cols = term.cols().max(1);
+                let room = cols - cc.min(cols);
+                let (start_col, first) = if room >= 12 { (cc, room) } else { (0, cols) };
+                let start_row = if room >= 12 { cr } else { cr + 1 };
+                let lines = super::textutil::wrap(&st.marked, first, cols);
+                let last_row = start_row + lines.len();
+                let shift = last_row.saturating_sub(term.rows());
+                let base = start_row.saturating_sub(shift);
+                let body = rgba(theme::BODY, 1.0);
+                for (i, line) in lines.iter().enumerate() {
+                    let lx = left + if i == 0 { start_col } else { 0 } as f64 * cw;
+                    let ly = top + (base + i) as f64 * ch;
+                    let w = line.chars().count().max(1) as f64 * cw;
+                    let full = left + cols as f64 * cw;
+                    paint::fill_rect(&cg, lx, ly, if i + 1 < lines.len() { full } else { lx + w }, ly + ch, body);
+                    draw_run(&st.fonts, line, &Attrs::default(), default_fg, lx, ly);
+                    paint::fill_rect(&cg, lx, ly + ch - 2.0, lx + w, ly + ch - 1.0, accent);
+                }
             } else if focused {
                 paint::fill_rect(&cg, x, y + 1.0, x + width, y + ch - 1.0, accent);
                 if cell.ch != ' ' {
@@ -1346,6 +1536,9 @@ impl TermView {
         let glow = GLOWS[st.glow];
         let _ = focused;
         for (b, symbol) in [(Button::Terminal, "terminal"), (Button::Folder, "folder"), (Button::Glow, "paintpalette")] {
+            if !crate::layout::SIDEBAR.contains(&b) {
+                continue;
+            }
             let (x, y, r) = l.button(b);
             let (x, y, r) = (x as f64, y as f64, r as f64);
             if b == Button::Terminal || st.hover == Some(b) {

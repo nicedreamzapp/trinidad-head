@@ -23,7 +23,7 @@ use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2::msg_send;
 use objc2_app_kit::{NSEvent, NSEventModifierFlags, NSEventType, NSPasteboard, NSPasteboardTypeFileURL, NSPasteboardTypeString};
-use objc2_foundation::{NSNotFound, NSPoint, NSRange, NSRect, NSSize, NSString, NSTimer, NSUInteger, NSURL};
+use objc2_foundation::{NSNotFound, NSPoint, NSRange, NSRect, NSRunLoop, NSRunLoopCommonModes, NSSize, NSString, NSTimer, NSUInteger, NSURL};
 
 use super::{THWindow, TermView};
 use crate::layout::{Button, Hit};
@@ -246,6 +246,10 @@ impl Ctx {
                 let _: () = unsafe { msg_send![&*self.view, scrollWheel: &*e] };
             }
         }
+    }
+
+    fn has_sel(&self) -> bool {
+        self.view.has_selection()
     }
 
     fn set_pasteboard(&self, text: &str) {
@@ -480,7 +484,7 @@ fn full_steps() -> Vec<Step> {
         c.click_button(Button::Glow);
     }));
 
-    // 4. Sidebar: the glow button cycles themes and saves the choice; the folder button opens Finder.
+    // 4. Sidebar: the glow button cycles themes and saves the choice; it is the only sidebar button.
     s.push(act(0.4, |c| {
         let want = (c.glow0.get() + 1) % GLOWS.len();
         let saved = Ctx::settings_path().and_then(|p| std::fs::read_to_string(p).ok());
@@ -517,11 +521,10 @@ fn full_steps() -> Vec<Step> {
                 }
             }
         }
-        c.click_button(Button::Folder);
     }));
     s.push(act(0.3, |c| {
-        c.check("folder button opens Finder", c.view.folder_opened(), "the folder did not open");
-        c.window.makeKeyAndOrderFront(None);
+        let (x, y, _) = c.view.layout().button(Button::Folder);
+        c.check("the sidebar has no terminal or folder icons", c.view.layout().button_at(x, y).is_none(), "folder button still there");
     }));
 
     // Drag and drop: a dropped file arrives as an escaped path, bracketed like a paste.
@@ -574,17 +577,104 @@ fn full_steps() -> Vec<Step> {
         c.mark();
         let (x, y) = c.cell_point(2, 3);
         c.mouse(NSEventType::LeftMouseDown, x, y, NSEventModifierFlags::empty());
-        let (x2, y2) = c.cell_point(2, 6);
-        c.mouse(NSEventType::LeftMouseDragged, x2, y2, NSEventModifierFlags::empty());
-        c.mouse(NSEventType::LeftMouseUp, x2, y2, NSEventModifierFlags::empty());
+        c.mouse(NSEventType::LeftMouseUp, x, y, NSEventModifierFlags::empty());
     }));
     s.push(act(0.3, |c| {
         let got = c.captured();
-        c.check(
-            "clicks and drags go to the program when it asks (SGR)",
-            got == b"\x1b[<0;4;3M\x1b[<32;7;3M\x1b[<0;7;3m",
-            show(&got),
-        );
+        c.check("a click goes to the program when it asks (SGR)", got == b"\x1b[<0;4;3M\x1b[<0;4;3m", show(&got));
+        c.feed(b"\x1b[2J\x1b[5;1HDRAG-ME-TOO");
+        c.mark();
+        c.set_pasteboard("before");
+        c.drag_cells((4, 0), (4, 10), NSEventModifierFlags::empty());
+    }));
+    s.push(act(0.3, |c| {
+        c.check("a drag selects even when the program wants the mouse", c.has_sel(), "no selection");
+        c.check("a drag is not sent to the program", c.captured().is_empty(), show(&c.captured()));
+        c.check("a drag does not copy by itself", c.pasteboard() == "before", c.pasteboard());
+        c.feed(b"\x1b[7;1Hsee https://example.com/page now");
+    }));
+    // The right-click menu is modal: a timer that also runs while it tracks reads it, then
+    // closes it.
+    s.push(act(0.3, |c| {
+        let (x, y) = c.cell_point(6, 10);
+        let view = c.view.clone();
+        let seen: Rc<RefCell<Option<(bool, Vec<(String, bool)>)>>> = Rc::new(RefCell::new(None));
+        let seen2 = seen.clone();
+        let block = RcBlock::new(move |_t: NonNull<NSTimer>| {
+            let mode = NSRunLoop::currentRunLoop().currentMode().map(|m| m.to_string()).unwrap_or_default();
+            *seen2.borrow_mut() = Some((mode.contains("EventTracking"), view.menu_state().1));
+            view.cancel_menu();
+        });
+        let timer = unsafe { NSTimer::timerWithTimeInterval_repeats_block(0.5, false, &block) };
+        unsafe { NSRunLoop::currentRunLoop().addTimer_forMode(&timer, NSRunLoopCommonModes) };
+        let before = c.view.menu_state().0;
+        c.mouse(NSEventType::RightMouseDown, x, y, NSEventModifierFlags::empty());
+        c.mouse(NSEventType::RightMouseUp, x, y, NSEventModifierFlags::empty());
+        let after = c.view.menu_state().0;
+        c.check("right-click opens the menu", after == before + 1, format!("menus {before} -> {after}"));
+        let got = seen.borrow().clone();
+        match got {
+            Some((tracking, items)) => {
+                c.check("the menu stays open on screen until closed", tracking, "menu was not tracking");
+                let titles: Vec<&str> = items.iter().map(|(t, _)| t.as_str()).collect();
+                c.check(
+                    "over a link the menu offers Open Link and Copy Link",
+                    titles.starts_with(&["Open Link", "Copy Link"]),
+                    format!("{items:?}"),
+                );
+                c.check(
+                    "the menu's Copy is enabled after a drag-selection",
+                    items.iter().any(|(t, e)| t == "Copy" && *e),
+                    format!("{items:?}"),
+                );
+            }
+            None => c.check("the menu stays open on screen until closed", false, "timer never ran"),
+        }
+    }));
+    s.push(act(0.3, |c| {
+        c.mark();
+        let (x, y) = c.cell_point(6, 12);
+        c.mouse(NSEventType::LeftMouseDown, x, y, NSEventModifierFlags::Command);
+        c.mouse(NSEventType::LeftMouseUp, x, y, NSEventModifierFlags::Command);
+    }));
+    s.push(act(0.3, |c| {
+        let got = c.view.link_opened();
+        c.check("Cmd+click opens the link", got.as_deref() == Some("https://example.com/page"), format!("{got:?}"));
+        c.check("Cmd+click is not sent to the program", c.captured().is_empty(), show(&c.captured()));
+        let before = c.view.menu_state().0;
+        let block = RcBlock::new({
+            let view = c.view.clone();
+            move |_t: NonNull<NSTimer>| view.cancel_menu()
+        });
+        let timer = unsafe { NSTimer::timerWithTimeInterval_repeats_block(0.4, false, &block) };
+        unsafe { NSRunLoop::currentRunLoop().addTimer_forMode(&timer, NSRunLoopCommonModes) };
+        let (x, y) = c.cell_point(2, 2);
+        c.mouse(NSEventType::LeftMouseDown, x, y, NSEventModifierFlags::Control);
+        c.mouse(NSEventType::LeftMouseUp, x, y, NSEventModifierFlags::Control);
+        let after = c.view.menu_state().0;
+        c.check("Control-click opens the menu", after == before + 1, format!("menus {before} -> {after}"));
+        // Long dictation text: drawn wrapped inside the window. A picture goes next to the
+        // results for a look.
+        c.feed(b"\x1b[2J\x1b[10;1H> ");
+        let long = "this is a long dictated sentence that keeps going well past the right edge of the window so it has to wrap onto the next lines instead of running off the side";
+        let _: () = unsafe {
+            msg_send![&*c.view, setMarkedText: &*NSString::from_str(long), selectedRange: NSRange::new(0, 0), replacementRange: NSRange::new(NSNotFound as usize, 0)]
+        };
+        c.view.display();
+        if let Some(dir) = results_path().and_then(|p| p.parent().map(|d| d.join("dictation.png"))) {
+            let rect = c.view.bounds();
+            if let Some(rep) = c.view.bitmapImageRepForCachingDisplayInRect(rect) {
+                c.view.cacheDisplayInRect_toBitmapImageRep(rect, &rep);
+                let data = unsafe {
+                    rep.representationUsingType_properties(objc2_app_kit::NSBitmapImageFileType::PNG, &objc2_foundation::NSDictionary::new())
+                };
+                if let Some(data) = data {
+                    let _ = std::fs::write(&dir, data.to_vec());
+                    append(&format!("NOTE dictation picture {}", dir.display()));
+                }
+            }
+        }
+        let _: () = unsafe { msg_send![&*c.view, unmarkText] };
         c.mark();
         c.scroll(1);
         c.scroll(-1);
