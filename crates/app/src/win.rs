@@ -7,15 +7,16 @@ use std::time::{Duration, Instant};
 use core_vt::{Attrs, Cell, Color, Terminal};
 use pty::Pty;
 use windows::core::{w, Interface, PCWSTR};
-use windows::Win32::Foundation::{HGLOBAL, HWND, LPARAM, LRESULT, RECT, WPARAM};
+use windows::Win32::Foundation::{HGLOBAL, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
+use windows_numerics::Vector2;
 use windows::Win32::Graphics::Direct2D::Common::{
-    D2D1_ALPHA_MODE_IGNORE, D2D1_COLOR_F, D2D1_PIXEL_FORMAT, D2D_RECT_F, D2D_SIZE_U,
+    D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_COLOR_F, D2D1_PIXEL_FORMAT, D2D_RECT_F, D2D_SIZE_U,
 };
 use windows::Win32::Graphics::Direct2D::{
-    D2D1CreateFactory, ID2D1Factory, ID2D1HwndRenderTarget, ID2D1SolidColorBrush,
+    D2D1CreateFactory, ID2D1Factory, D2D1_ELLIPSE, D2D1_ROUNDED_RECT, ID2D1HwndRenderTarget, ID2D1SolidColorBrush,
     D2D1_DRAW_TEXT_OPTIONS_CLIP, D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT, D2D1_FACTORY_TYPE_SINGLE_THREADED,
     D2D1_HWND_RENDER_TARGET_PROPERTIES, D2D1_PRESENT_OPTIONS_IMMEDIATELY, D2D1_RENDER_TARGET_PROPERTIES,
-    D2D1_RENDER_TARGET_TYPE_DEFAULT, D2D1_RENDER_TARGET_USAGE_NONE, D2D1_TEXT_ANTIALIAS_MODE_CLEARTYPE,
+    D2D1_RENDER_TARGET_TYPE_DEFAULT, D2D1_RENDER_TARGET_USAGE_NONE, D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE,
     D2D1_FEATURE_LEVEL_DEFAULT,
 };
 use windows::Win32::Graphics::DirectWrite::{
@@ -28,26 +29,41 @@ use windows::Win32::Graphics::Gdi::{BeginPaint, EndPaint, PAINTSTRUCT};
 use windows::Win32::System::DataExchange::{CloseClipboard, GetClipboardData, OpenClipboard};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Memory::{GlobalLock, GlobalUnlock};
-use windows::Win32::UI::HiDpi::{GetDpiForWindow, SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2};
+use windows::Win32::UI::HiDpi::{GetDpiForWindow, GetSystemMetricsForDpi, SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetKeyState, VIRTUAL_KEY, VK_CONTROL, VK_DELETE, VK_DOWN, VK_END, VK_F1, VK_F10, VK_F11, VK_F12, VK_F2, VK_F3,
     VK_F4, VK_F5, VK_F6, VK_F7, VK_F8, VK_F9, VK_HOME, VK_INSERT, VK_LEFT, VK_MENU, VK_NEXT, VK_PRIOR, VK_RIGHT,
-    VK_SHIFT, VK_SPACE, VK_UP,
+    VK_SHIFT, VK_SPACE, VK_UP, ReleaseCapture, SetCapture, TrackMouseEvent, TME_LEAVE, TRACKMOUSEEVENT,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetClientRect, GetMessageW, LoadCursorW,
     PostMessageW, PostQuitMessage, RegisterClassW, SetWindowTextW, TranslateMessage, CS_HREDRAW, CS_VREDRAW,
     CW_USEDEFAULT, IDC_IBEAM, MSG, WHEEL_DELTA, WINDOW_EX_STYLE, WM_APP, WM_CHAR, WM_DESTROY, WM_DPICHANGED,
     WM_KEYDOWN, WM_KILLFOCUS, WM_MOUSEWHEEL, WM_PAINT, WM_RBUTTONUP, WM_SETFOCUS, WM_SIZE, WM_SYSCHAR,
-    WM_SYSKEYDOWN, WNDCLASSW, WS_OVERLAPPEDWINDOW, WS_VISIBLE,
+    WM_SYSKEYDOWN, WNDCLASSW, WS_OVERLAPPEDWINDOW, WS_VISIBLE, IsZoomed, NCCALCSIZE_PARAMS, SetWindowPos,
+    ShowWindow, SM_CXFRAME, SM_CXPADDEDBORDER, SWP_FRAMECHANGED, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
+    SW_MAXIMIZE, SW_MINIMIZE, SW_RESTORE, WM_CLOSE, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_NCACTIVATE,
+    WM_NCCALCSIZE, WM_NCHITTEST, GetWindowRect,
 };
+use windows::Win32::UI::Controls::WM_MOUSELEAVE;
+use windows::Win32::Graphics::Gdi::{CreateRoundRectRgn, ScreenToClient, SetWindowRgn};
 
 const WM_TERM_OUTPUT: u32 = WM_APP + 1;
 const WM_TERM_EXITED: u32 = WM_APP + 2;
 const CF_UNICODETEXT: u32 = 13;
-const PAD: f32 = 6.0;
-const FONT_PT: f32 = 11.0;
-const APP_NAME: &str = "Our Terminal";
+// Look: matches Matt's Mac Ghostty ("Clear Dark": #191d27 at 95% over a blur, #e0e0e0 text).
+const BG: u32 = 0x191D27;
+const FG: u32 = 0xE0E0E0;
+const BG_OPACITY: f32 = 0.95;
+const FONT_DIP: f32 = 13.0;
+const PAD_DIP: f32 = 10.0;
+const TITLE_DIP: f32 = 28.0;
+/// Mac-style window buttons: close, minimize, zoom (centers in DIPs from the left edge).
+const LIGHTS: [(f32, u32); 3] = [(20.0, 0xFF5F57), (40.0, 0xFEBC2E), (60.0, 0x28C840)];
+const LIGHT_R: f32 = 6.0;
+/// Corner radius. Windows 11 only rounds to 8 px on its own, so we cut the shape ourselves.
+const CORNER_DIP: f32 = 16.0;
+const APP_NAME: &str = "Tombolo";
 
 /// State shared between the window thread and the shell-reader thread.
 struct Shared {
@@ -70,6 +86,10 @@ struct App {
     baseline_fix: f32,
     scroll_offset: usize,
     focused: bool,
+    title_format: Option<IDWriteTextFormat>,
+    lights_hover: bool,
+    lights_pressed: Option<usize>,
+    tracking_mouse: bool,
     high_surrogate: Option<u16>,
     meter: crate::latency::Meter,
     last_title: Instant,
@@ -93,7 +113,7 @@ pub fn run() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let command = if args.is_empty() { pty::default_shell() } else { args.join(" ") };
     let data_dir = std::env::var("LOCALAPPDATA")
-        .map(|d| std::path::PathBuf::from(d).join("OurTerminal"))
+        .map(|d| std::path::PathBuf::from(d).join("Tombolo"))
         .ok();
     if let Some(d) = &data_dir {
         let _ = std::fs::create_dir_all(d);
@@ -101,12 +121,12 @@ pub fn run() {
     let log = data_dir.as_ref().and_then(|d| {
         std::fs::OpenOptions::new().create(true).append(true).open(d.join("latency.log")).ok()
     });
-    // Test hook: OUR_TERMINAL_DUMP=path writes the visible screen there a few times a second.
-    let dump_path = std::env::var_os("OUR_TERMINAL_DUMP").map(std::path::PathBuf::from);
+    // Test hook: TOMBOLO_DUMP=path writes the visible screen there a few times a second.
+    let dump_path = std::env::var_os("TOMBOLO_DUMP").map(std::path::PathBuf::from);
 
     unsafe {
         let instance = GetModuleHandleW(None).expect("module handle");
-        let class = w!("OurTerminalWindow");
+        let class = w!("TomboloWindow");
         let wc = WNDCLASSW {
             style: CS_HREDRAW | CS_VREDRAW,
             lpfnWndProc: Some(wndproc),
@@ -132,7 +152,8 @@ pub fn run() {
             None,
         )
         .expect("create window");
-        round_corners(hwnd);
+        apply_chrome(hwnd);
+        update_shape(hwnd);
 
         let d2d: ID2D1Factory = D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, None).expect("d2d");
         let dwrite: IDWriteFactory = DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED).expect("dwrite");
@@ -149,7 +170,7 @@ pub fn run() {
                     windows::Win32::UI::WindowsAndMessaging::MessageBoxW(
                         Some(hwnd),
                         PCWSTR(msg.as_ptr()),
-                        w!("Our Terminal"),
+                        w!("Tombolo"),
                         Default::default(),
                     );
                     return;
@@ -166,6 +187,10 @@ pub fn run() {
             baseline_fix: 0.0,
             scroll_offset: 0,
             focused: true,
+            title_format: None,
+            lights_hover: false,
+            lights_pressed: None,
+            tracking_mouse: false,
             high_surrogate: None,
             meter: crate::latency::Meter::new(log),
             last_title: Instant::now(),
@@ -225,6 +250,27 @@ fn reader_loop(mut output: std::fs::File, shared: Arc<Mutex<Shared>>, pty: Arc<M
 }
 
 unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    // Our own frame: the whole window is client area, drawn by us, like the Mac.
+    match msg {
+        WM_NCCALCSIZE if wparam.0 != 0 => {
+            if IsZoomed(hwnd).as_bool() {
+                // Maximized windows hang over the screen edge by the frame size; pull the content back in.
+                let params = &mut *(lparam.0 as *mut NCCALCSIZE_PARAMS);
+                let dpi = GetDpiForWindow(hwnd);
+                let f = GetSystemMetricsForDpi(SM_CXFRAME, dpi) + GetSystemMetricsForDpi(SM_CXPADDEDBORDER, dpi);
+                let r = &mut params.rgrc[0];
+                r.left += f;
+                r.top += f;
+                r.right -= f;
+                r.bottom -= f;
+            }
+            return LRESULT(0);
+        }
+        WM_NCHITTEST => return LRESULT(hit_test(hwnd, lparam) as isize),
+        // Stop Windows painting its old frame when focus changes.
+        WM_NCACTIVATE => return DefWindowProcW(hwnd, msg, wparam, LPARAM(-1)),
+        _ => {}
+    }
     let handled = APP.with(|cell| {
         let Ok(mut guard) = cell.try_borrow_mut() else { return None };
         let app = guard.as_mut()?;
@@ -264,6 +310,7 @@ impl App {
                     Some(LRESULT(0))
                 }
                 WM_SIZE => {
+                    update_shape(self.hwnd);
                     self.fit_to_window();
                     Some(LRESULT(0))
                 }
@@ -279,6 +326,7 @@ impl App {
                         windows::Win32::UI::WindowsAndMessaging::SWP_NOZORDER,
                     );
                     self.make_fonts();
+                    update_shape(self.hwnd);
                     self.fit_to_window();
                     Some(LRESULT(0))
                 }
@@ -308,6 +356,61 @@ impl App {
                 }
                 WM_RBUTTONUP => {
                     self.paste();
+                    Some(LRESULT(0))
+                }
+                WM_MOUSEMOVE => {
+                    if !self.tracking_mouse {
+                        let mut tme = TRACKMOUSEEVENT {
+                            cbSize: std::mem::size_of::<TRACKMOUSEEVENT>() as u32,
+                            dwFlags: TME_LEAVE,
+                            hwndTrack: self.hwnd,
+                            dwHoverTime: 0,
+                        };
+                        self.tracking_mouse = TrackMouseEvent(&mut tme).is_ok();
+                    }
+                    let (x, y) = xy(lparam);
+                    let hover = self.light_at(x, y).is_some() || self.in_lights_group(x, y);
+                    if hover != self.lights_hover {
+                        self.lights_hover = hover;
+                        self.render();
+                    }
+                    Some(LRESULT(0))
+                }
+                WM_MOUSELEAVE => {
+                    self.tracking_mouse = false;
+                    if self.lights_hover {
+                        self.lights_hover = false;
+                        self.render();
+                    }
+                    Some(LRESULT(0))
+                }
+                WM_LBUTTONDOWN => {
+                    let (x, y) = xy(lparam);
+                    self.lights_pressed = self.light_at(x, y);
+                    if self.lights_pressed.is_some() {
+                        SetCapture(self.hwnd);
+                    }
+                    Some(LRESULT(0))
+                }
+                WM_LBUTTONUP => {
+                    let (x, y) = xy(lparam);
+                    if let Some(i) = self.lights_pressed.take() {
+                        let _ = ReleaseCapture();
+                        if self.light_at(x, y) == Some(i) {
+                            match i {
+                                0 => {
+                                    let _ = PostMessageW(Some(self.hwnd), WM_CLOSE, WPARAM(0), LPARAM(0));
+                                }
+                                1 => {
+                                    let _ = ShowWindow(self.hwnd, SW_MINIMIZE);
+                                }
+                                _ => {
+                                    let cmd = if IsZoomed(self.hwnd).as_bool() { SW_RESTORE } else { SW_MAXIMIZE };
+                                    let _ = ShowWindow(self.hwnd, cmd);
+                                }
+                            }
+                        }
+                    }
                     Some(LRESULT(0))
                 }
                 _ => None,
@@ -446,8 +549,34 @@ impl App {
         unsafe { GetDpiForWindow(self.hwnd) as f32 / 96.0 }
     }
 
+    fn left(&self) -> f32 {
+        PAD_DIP * self.dpi_scale()
+    }
+
+    fn top(&self) -> f32 {
+        TITLE_DIP * self.dpi_scale() + 2.0
+    }
+
+    /// Which window button (0 close, 1 minimize, 2 zoom) is under this client pixel.
+    fn light_at(&self, x: f32, y: f32) -> Option<usize> {
+        let s = self.dpi_scale();
+        let cy = TITLE_DIP * s / 2.0;
+        LIGHTS.iter().position(|&(cx, _)| {
+            let (dx, dy) = (x - cx * s, y - cy);
+            dx * dx + dy * dy <= (LIGHT_R * s + 1.0).powi(2)
+        })
+    }
+
+    fn in_lights_group(&self, x: f32, y: f32) -> bool {
+        let s = self.dpi_scale();
+        x >= (LIGHTS[0].0 - LIGHT_R - 2.0) * s
+            && x <= (LIGHTS[2].0 + LIGHT_R + 2.0) * s
+            && y >= 4.0 * s
+            && y <= (TITLE_DIP - 4.0) * s
+    }
+
     fn make_fonts(&mut self) {
-        let size = FONT_PT * 96.0 / 72.0 * self.dpi_scale();
+        let size = FONT_DIP * self.dpi_scale();
         let family = PCWSTR(self.font_family.as_ptr());
         let mut formats = Vec::new();
         unsafe {
@@ -476,6 +605,25 @@ impl App {
             }
         }
         self.formats = formats;
+        unsafe {
+            self.title_format = self
+                .dwrite
+                .CreateTextFormat(
+                    w!("Segoe UI Variable Text"),
+                    None,
+                    windows::Win32::Graphics::DirectWrite::DWRITE_FONT_WEIGHT_SEMI_BOLD,
+                    DWRITE_FONT_STYLE_NORMAL,
+                    DWRITE_FONT_STRETCH_NORMAL,
+                    12.5 * self.dpi_scale(),
+                    w!("en-us"),
+                )
+                .ok();
+            if let Some(f) = &self.title_format {
+                let _ = f.SetTextAlignment(windows::Win32::Graphics::DirectWrite::DWRITE_TEXT_ALIGNMENT_CENTER);
+                let _ = f.SetParagraphAlignment(windows::Win32::Graphics::DirectWrite::DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+                let _ = f.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+            }
+        }
     }
 
     fn client_size(&self) -> (u32, u32) {
@@ -488,8 +636,9 @@ impl App {
 
     fn fit_to_window(&mut self) {
         let (w, h) = self.client_size();
-        let cols = (((w as f32) - 2.0 * PAD) / self.cell_w).floor().max(2.0) as usize;
-        let rows = (((h as f32) - 2.0 * PAD) / self.cell_h).floor().max(1.0) as usize;
+        let (left, top) = (self.left(), self.top());
+        let cols = (((w as f32) - 2.0 * left) / self.cell_w).floor().max(2.0) as usize;
+        let rows = (((h as f32) - top - left) / self.cell_h).floor().max(1.0) as usize;
         {
             let mut s = self.shared.lock().unwrap();
             if s.term.cols() != cols || s.term.rows() != rows {
@@ -514,7 +663,7 @@ impl App {
         let (w, h) = self.client_size();
         let props = D2D1_RENDER_TARGET_PROPERTIES {
             r#type: D2D1_RENDER_TARGET_TYPE_DEFAULT,
-            pixelFormat: D2D1_PIXEL_FORMAT { format: DXGI_FORMAT_B8G8R8A8_UNORM, alphaMode: D2D1_ALPHA_MODE_IGNORE },
+            pixelFormat: D2D1_PIXEL_FORMAT { format: DXGI_FORMAT_B8G8R8A8_UNORM, alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED },
             dpiX: 96.0,
             dpiY: 96.0,
             usage: D2D1_RENDER_TARGET_USAGE_NONE,
@@ -527,7 +676,8 @@ impl App {
         };
         unsafe {
             let Ok(t) = self.d2d.CreateHwndRenderTarget(&props, &hprops) else { return false };
-            t.SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_CLEARTYPE);
+            // ClearType needs an opaque surface; the glass background is see-through.
+            t.SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
             let Ok(b) = t.CreateSolidColorBrush(&rgb(0xCCCCCC), None) else { return false };
             self.brush = Some(b);
             self.target = Some(t);
@@ -547,17 +697,26 @@ impl App {
         let s = shared.lock().unwrap();
         let term = &s.term;
         let offset = self.scroll_offset.min(term.scrollback_len());
-        let default_bg = rgb(0x0C0C0C);
-        let default_fg = rgb(0xCCCCCC);
+        let default_bg = rgb(BG);
+        let default_fg = rgb(FG);
+        let (left, top) = (self.left(), self.top());
 
         unsafe {
             target.BeginDraw();
-            target.Clear(Some(&default_bg));
+            // Premultiplied: the window shows the blurred desktop through the 5% gap.
+            let glass = D2D1_COLOR_F {
+                r: default_bg.r * BG_OPACITY,
+                g: default_bg.g * BG_OPACITY,
+                b: default_bg.b * BG_OPACITY,
+                a: BG_OPACITY,
+            };
+            target.Clear(Some(&glass));
+            self.draw_title_bar(&target, &brush, &term.title);
 
             let mut text: Vec<u16> = Vec::with_capacity(term.cols() * 2);
             for row in 0..term.rows() {
                 let line = term.line(row, offset);
-                let y = PAD + row as f32 * ch;
+                let y = top + row as f32 * ch;
                 let mut col = 0;
                 while col < line.len() {
                     let start = col;
@@ -580,8 +739,8 @@ impl App {
                         }
                     }
                     let (fg, bg) = colors(&attrs, default_fg, default_bg);
-                    let x0 = PAD + start as f32 * cw;
-                    let x1 = PAD + col as f32 * cw;
+                    let x0 = left + start as f32 * cw;
+                    let x1 = left + col as f32 * cw;
                     if bg != default_bg {
                         brush.SetColor(&bg);
                         target.FillRectangle(&D2D_RECT_F { left: x0, top: y, right: x1, bottom: y + ch }, &brush);
@@ -603,11 +762,11 @@ impl App {
             // Cursor: solid block when focused, outline when not.
             if term.cursor_visible && offset == 0 {
                 let (cr, cc) = term.cursor();
-                let x = PAD + cc as f32 * cw;
-                let y = PAD + cr as f32 * ch;
+                let x = left + cc as f32 * cw;
+                let y = top + cr as f32 * ch;
                 let cell = term.line(cr, 0)[cc];
                 let width = if cell.wide { 2.0 * cw } else { cw };
-                brush.SetColor(&rgb(0xFFFFFF));
+                brush.SetColor(&default_fg);
                 let rect = D2D_RECT_F { left: x, top: y, right: x + width, bottom: y + ch };
                 if self.focused {
                     target.FillRectangle(&rect, &brush);
@@ -635,6 +794,20 @@ impl App {
                 );
             }
 
+            // A soft 1 px outline along the rounded edge, like the Mac, which also hides the
+            // stair-steps of the clipped corners.
+            if !IsZoomed(self.hwnd).as_bool() {
+                let (w, h) = self.client_size();
+                let rad = CORNER_DIP * self.dpi_scale();
+                let edge = D2D1_ROUNDED_RECT {
+                    rect: D2D_RECT_F { left: 0.5, top: 0.5, right: w as f32 - 0.5, bottom: h as f32 - 0.5 },
+                    radiusX: rad - 0.5,
+                    radiusY: rad - 0.5,
+                };
+                brush.SetColor(&D2D1_COLOR_F { r: 0.30, g: 0.32, b: 0.37, a: 1.0 });
+                target.DrawRoundedRectangle(&edge, &brush, 1.5, None);
+            }
+
             let result = target.EndDraw(None, None);
             let now = Instant::now();
             if result.is_err() {
@@ -648,7 +821,7 @@ impl App {
                 self.first_frame_logged = true;
                 if let Ok(d) = std::env::var("LOCALAPPDATA") {
                     let _ = std::fs::write(
-                        std::path::Path::new(&d).join("OurTerminal").join("startup.log"),
+                        std::path::Path::new(&d).join("Tombolo").join("startup.log"),
                         format!("first shell output on screen after {:.0} ms\n", (now - self.started).as_secs_f64() * 1000.0),
                     );
                 }
@@ -684,6 +857,58 @@ impl App {
         }
     }
 
+    fn draw_title_bar(&self, target: &ID2D1HwndRenderTarget, brush: &ID2D1SolidColorBrush, shell_title: &str) {
+        let s = self.dpi_scale();
+        let (w, _) = self.client_size();
+        let bar = TITLE_DIP * s;
+        unsafe {
+            if let Some(f) = &self.title_format {
+                let title = if shell_title.is_empty() { APP_NAME } else { shell_title };
+                let t: Vec<u16> = title.encode_utf16().collect();
+                brush.SetColor(&rgb(if self.focused { 0xC8CCD4 } else { 0x7A7F8A }));
+                let rect = D2D_RECT_F { left: 80.0 * s, top: 0.0, right: w as f32 - 80.0 * s, bottom: bar };
+                target.DrawText(&t, f, &rect, brush, D2D1_DRAW_TEXT_OPTIONS_CLIP, DWRITE_MEASURING_MODE_NATURAL);
+            }
+            let cy = bar / 2.0;
+            for (i, &(cx, color)) in LIGHTS.iter().enumerate() {
+                let center = Vector2 { X: cx * s, Y: cy };
+                let dot = D2D1_ELLIPSE { point: center, radiusX: LIGHT_R * s, radiusY: LIGHT_R * s };
+                // Like macOS: colored when the window is active or hovered, gray otherwise.
+                let lit = self.focused || self.lights_hover;
+                let mut c = rgb(if lit { color } else { 0x4A4E57 });
+                if self.lights_pressed == Some(i) {
+                    c = D2D1_COLOR_F { r: c.r * 0.75, g: c.g * 0.75, b: c.b * 0.75, a: 1.0 };
+                }
+                brush.SetColor(&c);
+                target.FillEllipse(&dot, brush);
+                if self.lights_hover {
+                    brush.SetColor(&D2D1_COLOR_F { r: 0.0, g: 0.0, b: 0.0, a: 0.55 });
+                    let k = 2.8 * s;
+                    let line = |a: (f32, f32), b: (f32, f32)| {
+                        target.DrawLine(
+                            Vector2 { X: center.X + a.0, Y: center.Y + a.1 },
+                            Vector2 { X: center.X + b.0, Y: center.Y + b.1 },
+                            brush,
+                            1.2 * s,
+                            None,
+                        );
+                    };
+                    match i {
+                        0 => {
+                            line((-k, -k), (k, k));
+                            line((-k, k), (k, -k));
+                        }
+                        1 => line((-k - 0.5, 0.0), (k + 0.5, 0.0)),
+                        _ => {
+                            line((-k - 0.5, 0.0), (k + 0.5, 0.0));
+                            line((0.0, -k - 0.5), (0.0, k + 0.5));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn draw_text(
         &self,
@@ -710,18 +935,84 @@ impl App {
     }
 }
 
-/// Ask Windows 11 for rounded window corners, like the Mac. Older Windows ignores this.
-fn round_corners(hwnd: HWND) {
-    use windows::Win32::Graphics::Dwm::{DwmSetWindowAttribute, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND};
-    unsafe {
-        let pref = DWMWCP_ROUND;
-        let _ = DwmSetWindowAttribute(
-            hwnd,
-            DWMWA_WINDOW_CORNER_PREFERENCE,
-            &pref as *const _ as *const std::ffi::c_void,
-            std::mem::size_of_val(&pref) as u32,
-        );
+/// Dark, rounded, blurred-glass window like the Mac. Windows 10 ignores the parts it lacks.
+fn apply_chrome(hwnd: HWND) {
+    use windows::Win32::Graphics::Dwm::{
+        DwmExtendFrameIntoClientArea, DwmSetWindowAttribute, DWMWA_BORDER_COLOR, DWMWA_SYSTEMBACKDROP_TYPE,
+        DWMWA_USE_IMMERSIVE_DARK_MODE, DWMWA_WINDOW_CORNER_PREFERENCE, DWMSBT_TRANSIENTWINDOW, DWMWCP_DONOTROUND,
+        DWMWA_COLOR_NONE,
+        DWMWINDOWATTRIBUTE,
+    };
+    use windows::Win32::UI::Controls::MARGINS;
+    unsafe fn set<T>(hwnd: HWND, attr: DWMWINDOWATTRIBUTE, value: T) {
+        let _ = DwmSetWindowAttribute(hwnd, attr, &value as *const T as *const std::ffi::c_void, std::mem::size_of::<T>() as u32);
     }
+    unsafe {
+        set(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, windows::core::BOOL(1));
+        set(hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_DONOTROUND);
+        // Acrylic: the blurred see-through backdrop.
+        set(hwnd, DWMWA_SYSTEMBACKDROP_TYPE, DWMSBT_TRANSIENTWINDOW);
+        // We draw our own rounded edge; Windows' square one would be clipped anyway.
+        set(hwnd, DWMWA_BORDER_COLOR, DWMWA_COLOR_NONE);
+        // Let the backdrop and shadow reach under our own drawn title bar.
+        let m = MARGINS { cxLeftWidth: -1, cxRightWidth: -1, cyTopHeight: -1, cyBottomHeight: -1 };
+        let _ = DwmExtendFrameIntoClientArea(hwnd, &m);
+        let _ = SetWindowPos(hwnd, None, 0, 0, 0, 0, SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER);
+    }
+}
+
+/// Clip the window to a rounded rectangle (square when maximized, like the Mac's full screen).
+fn update_shape(hwnd: HWND) {
+    unsafe {
+        if IsZoomed(hwnd).as_bool() {
+            SetWindowRgn(hwnd, None, true);
+            return;
+        }
+        let mut r = RECT::default();
+        let _ = GetWindowRect(hwnd, &mut r);
+        let d = (2.0 * CORNER_DIP * GetDpiForWindow(hwnd) as f32 / 96.0).round() as i32;
+        let rgn = CreateRoundRectRgn(0, 0, r.right - r.left + 1, r.bottom - r.top + 1, d, d);
+        // The window owns the region from here on.
+        SetWindowRgn(hwnd, Some(rgn), true);
+    }
+}
+
+fn xy(lparam: LPARAM) -> (f32, f32) {
+    ((lparam.0 & 0xFFFF) as u16 as i16 as f32, ((lparam.0 >> 16) & 0xFFFF) as u16 as i16 as f32)
+}
+
+/// Resize edges, the draggable title bar, and our buttons.
+unsafe fn hit_test(hwnd: HWND, lparam: LPARAM) -> u32 {
+    const HTCLIENT: u32 = 1;
+    const HTCAPTION: u32 = 2;
+    let (sx, sy) = xy(lparam);
+    let mut pt = POINT { x: sx as i32, y: sy as i32 };
+    let _ = ScreenToClient(hwnd, &mut pt);
+    let mut r = RECT::default();
+    let _ = GetClientRect(hwnd, &mut r);
+    let s = GetDpiForWindow(hwnd) as f32 / 96.0;
+    let (x, y) = (pt.x as f32, pt.y as f32);
+    let (w, h) = (r.right as f32, r.bottom as f32);
+    if !IsZoomed(hwnd).as_bool() {
+        let e = 6.0 * s;
+        let (l, rt, t, b) = (x < e, x >= w - e, y < e, y >= h - e);
+        match (l, rt, t, b) {
+            (true, _, true, _) => return 13,
+            (_, true, true, _) => return 14,
+            (true, _, _, true) => return 16,
+            (_, true, _, true) => return 17,
+            (true, ..) => return 10,
+            (_, true, ..) => return 11,
+            (_, _, true, _) => return 12,
+            (_, _, _, true) => return 15,
+            _ => {}
+        }
+    }
+    if y < TITLE_DIP * s {
+        let in_lights = x >= (LIGHTS[0].0 - LIGHT_R - 2.0) * s && x <= (LIGHTS[2].0 + LIGHT_R + 2.0) * s;
+        return if in_lights { HTCLIENT } else { HTCAPTION };
+    }
+    HTCLIENT
 }
 
 fn pick_font(dwrite: &IDWriteFactory) -> Vec<u16> {
@@ -729,7 +1020,7 @@ fn pick_font(dwrite: &IDWriteFactory) -> Vec<u16> {
         let mut coll: Option<IDWriteFontCollection> = None;
         if dwrite.GetSystemFontCollection(&mut coll, false).is_ok() {
             if let Some(coll) = coll {
-                for name in ["Cascadia Mono", "Cascadia Code", "Consolas", "Courier New"] {
+                for name in ["Menlo", "Cascadia Mono", "Cascadia Code", "Consolas", "Courier New"] {
                     let w = wide(name);
                     let mut index = 0u32;
                     let mut exists = windows::core::BOOL(0);

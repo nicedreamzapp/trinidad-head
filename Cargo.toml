@@ -26,8 +26,10 @@ windows = { version = "0.62", features = [
     "Win32_UI_WindowsAndMessaging",
     "Win32_UI_Input_KeyboardAndMouse",
     "Win32_UI_HiDpi",
+    "Win32_UI_Controls",
 ] }
 windows-core = "0.62"
+windows-numerics = "0.3"
 
 [profile.release]
 opt-level = 3

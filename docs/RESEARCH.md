@@ -1,6 +1,6 @@
-# Our terminal — research (2026-09-16)
+# Tombolo — research (2026-09-16)
 
-Goal: Matt wants our own terminal, Windows first, on Ghostty's engine (libghostty, MIT), fixing what people complain about in Ghostty. Nothing has been built yet; this is the planning input.
+Early goal: a Windows-first terminal on Ghostty's engine (libghostty, MIT) that fixes what people complain about in Ghostty. We later chose to write everything from scratch (see PLAN.md), but these findings still drive the design.
 
 ## What people complain about in Ghostty (sourced)
 1. Memory bloat in long sessions, which Claude Code triggers. A leak was fixed in 1.3.0, but the base footprint is still about 10x a light terminal (812MiB vs 84MiB). Sources: issues #254, #10289, 1.3.0 notes.

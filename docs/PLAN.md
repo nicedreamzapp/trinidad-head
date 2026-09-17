@@ -1,8 +1,8 @@
-# Our terminal — plan (2026-09-16, from scratch)
+# Tombolo — plan (2026-09-16)
 
-Matt's call, 11:35p: write it ourselves in Rust, with no Ghostty engine inside, and build it as a
-**platform** other things grow from, not a single app. This replaces the "Draft plan" in RESEARCH.md,
-but the pain points and Windows traps in that file still apply. Name: TBD.
+Written from scratch in Rust, with no Ghostty engine inside, and built as a **platform** other
+things grow from, not a single app. This replaces the "Draft plan" in RESEARCH.md, but the pain
+points and Windows traps in that file still apply.
 
 ## The idea in one line
 Terminal sessions live in a background service that people, AI agents, phones and web pages can all
@@ -11,7 +11,7 @@ see and drive. The window is just one of the ways to look at them.
 ## What makes it ours
 1. **Linux and Windows as one system.** A WSL Linux shell and a Windows shell sit side by side and
    share a clipboard, a command history and file paths. Paths convert automatically between
-   `C:\Users\matt` and `/mnt/c/Users/matt`. You can run a command for either OS from either shell.
+   `C:\Users\you` and `/mnt/c/Users/you`. You can run a command for either OS from either shell.
 2. **Sessions outlive the window.** A daemon owns every shell. A crashed window, a closed laptop lid
    or a reboot (restored from a saved snapshot) doesn't lose your work. A second window, the phone,
    or FIA can attach to the same live session.
@@ -35,7 +35,7 @@ Each layer is its own Rust crate with a stable interface, so anything can reuse 
 | Layer | What it does | What else could use it |
 |---|---|---|
 | `core-vt` | Parses terminal output and keeps screen state, scrollback and reflow. Has no UI. Scrollback is capped and compressed. | web viewer, phone app, AI screen reader, test tools |
-| `pty` | Runs processes through Windows ConPTY, WSL, Unix ptys and SSH (falling back automatically to a TERM value the server knows) | remote runners, a pcrun replacement |
+| `pty` | Runs processes through Windows ConPTY, WSL, Unix ptys and SSH (falling back automatically to a TERM value the server knows) | remote runners, remote command tools |
 | `sessiond` | Background daemon that owns every session, block and history entry. Snapshots to disk. | everything below |
 | `control-api` | Local socket + HTTP/WebSocket with a JSON protocol: open, type, read, subscribe, lease | agents, dictation, phone mode, iMessage, HQ dashboard, FIA |
 | `bridge` | Linux↔Windows path translation, shared clipboard, unified history | file tools, scripts |
@@ -45,13 +45,12 @@ Each layer is its own Rust crate with a stable interface, so anything can reuse 
 | `ai` | Provider-neutral agent runtime: block search, "explain this error", command suggestions, approvals, audit | Claude Code tabs, local models |
 
 ## Things that can be built on it later
-- The FIA PC tab running on this instead of raw commands (live, streaming, multiple tabs)
+- Remote-control dashboards running on this instead of raw commands (live, streaming, multiple tabs)
 - A live agent view on the HQ dashboard showing what each agent is typing right now
 - A phone/iMessage "approve this command" flow
 - A screen-reader-first terminal for blind developers (the public accessibility angle)
 - Demo and recording mode for Studio Record / YouTube (replay a session from its blocks)
 - Mac and Linux versions from the same code
-- A public open-source release with Matt's name on it (job-hunt visibility)
 
 ## Build order (honest estimates)
 1. **PC toolchain.** Rust plus Microsoft's C++ build tools. This needs one admin "Yes" click on the PC. (~30 min)
@@ -68,4 +67,4 @@ can be demoed on the PC through FIA.
 ## Decisions already made
 - Written in Rust, from scratch, with no Ghostty code.
 - Windows first, with the Mac from the same codebase later.
-- Development and testing happen on the shop PC (DESKTOP-ULP4CQD: i7-1185G7, 32 GB RAM, Iris Xe GPU), driven from the M5 with `~/Scripts/pcrun`.
+- Developed and tested on a Windows 11 laptop (i7-1185G7, Iris Xe GPU) driven remotely from a Mac.

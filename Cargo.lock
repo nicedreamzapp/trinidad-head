@@ -3,16 +3,6 @@
 version = 4
 
 [[package]]
-name = "app"
-version = "0.1.0"
-dependencies = [
- "core-vt",
- "pty",
- "windows",
- "windows-core",
-]
-
-[[package]]
 name = "core-vt"
 version = "0.1.0"
 dependencies = [
@@ -53,6 +43,17 @@ dependencies = [
  "proc-macro2",
  "quote",
  "unicode-ident",
+]
+
+[[package]]
+name = "tombolo"
+version = "0.1.0"
+dependencies = [
+ "core-vt",
+ "pty",
+ "windows",
+ "windows-core",
+ "windows-numerics",
 ]
 
 [[package]]
