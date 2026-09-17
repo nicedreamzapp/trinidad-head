@@ -30,7 +30,7 @@ use crate::latency::Meter;
 use crate::layout::{Button, Hit, Layout};
 use crate::theme::{self, GLOWS};
 
-const FONT_SIZE: f64 = 13.0;
+const FONT_SIZE: f64 = 14.0;
 
 pub struct ViewState {
     shared: Arc<Mutex<Shared>>,
@@ -57,6 +57,9 @@ pub struct ViewState {
     dump_path: Option<std::path::PathBuf>,
     last_dump: Instant,
     tracking: Option<Retained<NSTrackingArea>>,
+    /// A press was sent to the program (mouse reporting), so drags and the release go there too.
+    mouse_reported: bool,
+    last_mouse_cell: Option<(usize, usize)>,
 }
 
 define_class!(
@@ -355,6 +358,8 @@ impl TermView {
             dump_path: std::env::var_os("TRINIDAD_HEAD_DUMP").map(std::path::PathBuf::from),
             last_dump: Instant::now(),
             tracking: None,
+            mouse_reported: false,
+            last_mouse_cell: None,
         };
         let this = Self::alloc(mtm).set_ivars(RefCell::new(state));
         unsafe { msg_send![super(this), initWithFrame: frame] }
@@ -561,6 +566,54 @@ impl TermView {
         (s.term.scrollback_len() - offset + row, col)
     }
 
+    /// The screen cell (row, col) under a point, clamped to the grid.
+    fn screen_cell(&self, x: f32, y: f32) -> (usize, usize) {
+        let st = self.ivars().borrow();
+        let t = st.layout.text;
+        let s = st.shared.lock().unwrap();
+        let row = ((y - t.t) as f64 / st.cell_h).floor().clamp(0.0, (s.term.rows() - 1) as f64) as usize;
+        let col = ((x - t.l) as f64 / st.cell_w).floor().clamp(0.0, (s.term.cols() - 1) as f64) as usize;
+        (row, col)
+    }
+
+    /// Whether the program in the terminal wants mouse events (and at what level).
+    fn mouse_mode(&self) -> (u16, bool) {
+        let st = self.ivars().borrow();
+        let s = st.shared.lock().unwrap();
+        (s.term.mouse_tracking, s.term.mouse_sgr)
+    }
+
+    fn mouse_mods(event: &NSEvent) -> u8 {
+        let f = event.modifierFlags();
+        (if f.contains(NSEventModifierFlags::Shift) { 4 } else { 0 })
+            | (if f.contains(NSEventModifierFlags::Option) { 8 } else { 0 })
+            | (if f.contains(NSEventModifierFlags::Control) { 16 } else { 0 })
+    }
+
+    /// Send one mouse report in whichever encoding the program asked for.
+    fn report_mouse(&self, button: u8, cell: (usize, usize), pressed: bool) {
+        let (_, sgr) = self.mouse_mode();
+        let bytes = if sgr {
+            core_vt::sgr_mouse(button, cell.1, cell.0, pressed)
+        } else {
+            // The old X10 form can't say which button was released, and stops at column 223.
+            let b = if pressed { button } else { (button & !3) | 3 };
+            let enc = |v: usize| (32 + (v + 1).min(223)) as u8;
+            vec![0x1b, b'[', b'M', 32 + b, enc(cell.1), enc(cell.0)]
+        };
+        let st = self.ivars().borrow();
+        let _ = st.pty.lock().unwrap().write(&bytes);
+    }
+
+    /// Focus in/out reports, when the program asked for them.
+    pub fn focus_changed(&self, focused: bool) {
+        let st = self.ivars().borrow();
+        let wants = st.shared.lock().unwrap().term.focus_events;
+        if wants {
+            let _ = st.pty.lock().unwrap().write(if focused { b"\x1b[I" } else { b"\x1b[O" });
+        }
+    }
+
     fn on_mouse_down(&self, event: &NSEvent) {
         let (x, y) = self.point(event);
         let (hit, button, in_body) = {
@@ -581,6 +634,17 @@ impl TermView {
                 }
             }
             Hit::Client => {
+                let shift = event.modifierFlags().contains(NSEventModifierFlags::Shift);
+                let in_text = self.ivars().borrow().layout.text.contains(x, y);
+                if in_text && !shift && self.mouse_mode().0 != 0 {
+                    // The program handles the mouse (e.g. Claude Code's full-screen view).
+                    let cell = self.screen_cell(x, y);
+                    self.report_mouse(Self::mouse_mods(event), cell, true);
+                    let mut st = self.ivars().borrow_mut();
+                    st.mouse_reported = true;
+                    st.last_mouse_cell = Some(cell);
+                    return;
+                }
                 if in_body {
                     let p = self.cell_at(x, y);
                     let mut st = self.ivars().borrow_mut();
@@ -638,6 +702,17 @@ impl TermView {
             }
             return;
         }
+        if self.ivars().borrow().mouse_reported {
+            let (x, y) = self.point(event);
+            let cell = self.screen_cell(x, y);
+            let (mode, _) = self.mouse_mode();
+            let moved = self.ivars().borrow().last_mouse_cell != Some(cell);
+            if mode >= 1002 && moved {
+                self.report_mouse(32 | Self::mouse_mods(event), cell, true);
+                self.ivars().borrow_mut().last_mouse_cell = Some(cell);
+            }
+            return;
+        }
         if self.ivars().borrow().selecting {
             let (x, y) = self.point(event);
             let p = self.cell_at(x, y);
@@ -651,6 +726,11 @@ impl TermView {
     fn on_mouse_up(&self, event: &NSEvent) {
         let (x, y) = self.point(event);
         if self.ivars().borrow_mut().resizing.take().is_some() {
+            return;
+        }
+        if std::mem::take(&mut self.ivars().borrow_mut().mouse_reported) {
+            let cell = self.screen_cell(x, y);
+            self.report_mouse(Self::mouse_mods(event), cell, false);
             return;
         }
         let selecting = std::mem::take(&mut self.ivars().borrow_mut().selecting);
@@ -726,6 +806,13 @@ impl TermView {
             let st = self.ivars().borrow();
             (st.layout.button_at(x, y), st.layout.hit(x, y), st.layout.text.contains(x, y))
         };
+        if in_text && self.mouse_mode().0 == 1003 {
+            let cell = self.screen_cell(x, y);
+            if self.ivars().borrow().last_mouse_cell != Some(cell) {
+                self.report_mouse(35 | Self::mouse_mods(event), cell, true);
+                self.ivars().borrow_mut().last_mouse_cell = Some(cell);
+            }
+        }
         let changed = {
             let mut st = self.ivars().borrow_mut();
             let c = st.hover != hover;
@@ -755,6 +842,30 @@ impl TermView {
     }
 
     fn on_scroll(&self, event: &NSEvent) {
+        let shift = event.modifierFlags().contains(NSEventModifierFlags::Shift);
+        let (mode, _) = self.mouse_mode();
+        let (x, y) = self.point(event);
+        if mode != 0 && !shift {
+            // Wheel goes to the program as buttons 64 (up) and 65 (down).
+            let cell = self.screen_cell(x, y);
+            let steps = {
+                let mut st = self.ivars().borrow_mut();
+                let delta = event.scrollingDeltaY();
+                if event.hasPreciseScrollingDeltas() {
+                    st.scroll_accum += delta / st.cell_h;
+                    let whole = st.scroll_accum.trunc();
+                    st.scroll_accum -= whole;
+                    whole
+                } else {
+                    delta.round()
+                }
+            };
+            let button = if steps > 0.0 { 64 } else { 65 };
+            for _ in 0..(steps.abs() as usize).min(10) {
+                self.report_mouse(button | Self::mouse_mods(event), cell, true);
+            }
+            return;
+        }
         let mut st = self.ivars().borrow_mut();
         let delta = event.scrollingDeltaY();
         let lines = if event.hasPreciseScrollingDeltas() {

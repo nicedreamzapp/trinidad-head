@@ -251,6 +251,7 @@ dependencies = [
 name = "trinidad-head"
 version = "0.1.0"
 dependencies = [
+ "block2",
  "core-vt",
  "dispatch2",
  "objc2",

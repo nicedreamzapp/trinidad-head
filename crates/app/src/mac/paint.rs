@@ -98,8 +98,10 @@ pub fn chrome(c: &CGContext, l: &Layout, st: &ChromeState) {
 
     // 1. Bloom and the pool of light under the window: wide, faint rim strokes.
     if !l.maximized {
-        for (w, a) in [(36.0, 0.035), (26.0, 0.06), (16.0, 0.10), (10.0, 0.16)] {
-            if let Some(g) = rim(st.glow, a * (0.4 + 0.6 * strength)) {
+        // Many thin layers stacked from wide to narrow approximate the Windows build's blur.
+        for i in 0..12 {
+            let w = 44.0 - i as f64 * 3.2;
+            if let Some(g) = rim(st.glow, 0.026 * (0.4 + 0.6 * strength)) {
                 stroke_gradient(c, &shape, w, &g, tl, br);
             }
         }

@@ -13,7 +13,7 @@ use std::time::Instant;
 use core_vt::Terminal;
 use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
-use objc2::{define_class, msg_send, sel, MainThreadMarker, MainThreadOnly};
+use objc2::{define_class, msg_send, sel, MainThreadMarker, MainThreadOnly, Message};
 use objc2_app_kit::{
     NSApplication, NSApplicationActivationPolicy, NSApplicationDelegate, NSBackingStoreType, NSColor, NSMenu,
     NSMenuItem, NSWindow, NSWindowStyleMask,
@@ -52,13 +52,13 @@ define_class!(
         #[unsafe(method(becomeKeyWindow))]
         fn become_key(&self) {
             let _: () = unsafe { msg_send![super(self), becomeKeyWindow] };
-            redraw_now();
+            focus_changed(true);
         }
 
         #[unsafe(method(resignKeyWindow))]
         fn resign_key(&self) {
             let _: () = unsafe { msg_send![super(self), resignKeyWindow] };
-            redraw_now();
+            focus_changed(false);
         }
     }
 );
@@ -103,6 +103,15 @@ pub(crate) fn request_redraw() {
 fn redraw_now() {
     VIEW.with(|v| {
         if let Some(v) = v.borrow().as_ref() {
+            v.setNeedsDisplay(true);
+        }
+    });
+}
+
+fn focus_changed(focused: bool) {
+    VIEW.with(|v| {
+        if let Some(v) = v.borrow().as_ref() {
+            v.focus_changed(focused);
             v.setNeedsDisplay(true);
         }
     });
@@ -181,7 +190,51 @@ pub fn run() {
     window.makeKeyAndOrderFront(None);
     #[allow(deprecated)]
     app.activateIgnoringOtherApps(true);
+    if std::env::var_os("TRINIDAD_HEAD_SELFTEST").is_some() {
+        self_test(&window);
+    }
     app.run();
+}
+
+/// Test hook (TRINIDAD_HEAD_SELFTEST=1): after a moment, feed this window a click, a drag and
+/// two wheel notches through AppKit's normal event path, so mouse handling can be checked
+/// without touching any other app.
+fn self_test(window: &THWindow) {
+    use objc2_app_kit::{NSEvent, NSEventModifierFlags, NSEventType};
+    let window = window.retain();
+    let events = move || {
+        let num = window.windowNumber();
+        let frame = window.frame();
+        // Window coordinates run bottom-up; aim at the middle of the text area.
+        let at = |dx: f64| NSPoint::new(frame.size.width * 0.4 + dx, frame.size.height * 0.6);
+        let mouse = |t: NSEventType, p: NSPoint| {
+            NSEvent::mouseEventWithType_location_modifierFlags_timestamp_windowNumber_context_eventNumber_clickCount_pressure(
+                t, p, NSEventModifierFlags::empty(), 0.0, num, None, 0, 1, 1.0,
+            )
+        };
+        for (t, p) in [
+            (NSEventType::LeftMouseDown, at(0.0)),
+            (NSEventType::LeftMouseDragged, at(60.0)),
+            (NSEventType::LeftMouseUp, at(60.0)),
+        ] {
+            if let Some(e) = mouse(t, p) {
+                window.sendEvent(&e);
+            }
+        }
+        // One wheel notch up, then one down.
+        for notch in [1, -1] {
+            use objc2_core_graphics::{CGEvent, CGScrollEventUnit};
+            if let Some(cg) = CGEvent::new_scroll_wheel_event2(None, CGScrollEventUnit::Line, 1, notch, 0, 0) {
+                if let Some(e) = NSEvent::eventWithCGEvent(&cg) {
+                    window.sendEvent(&e);
+                }
+            }
+        }
+    };
+    let timer_block = block2::RcBlock::new(move |_t: std::ptr::NonNull<objc2_foundation::NSTimer>| events());
+    unsafe {
+        let _ = objc2_foundation::NSTimer::scheduledTimerWithTimeInterval_repeats_block(3.0, false, &timer_block);
+    }
 }
 
 fn reader_loop(mut output: std::fs::File, shared: Arc<Mutex<Shared>>, pty: Arc<Mutex<Pty>>) {
@@ -190,12 +243,23 @@ fn reader_loop(mut output: std::fs::File, shared: Arc<Mutex<Shared>>, pty: Arc<M
         match output.read(&mut buf) {
             Ok(0) | Err(_) => break,
             Ok(n) => {
-                let responses = {
+                let (responses, clip) = {
                     let mut s = shared.lock().unwrap();
                     s.term.feed(&buf[..n]);
                     s.last_output = Some(Instant::now());
-                    s.term.take_responses()
+                    (s.term.take_responses(), s.term.take_clipboard())
                 };
+                // A program asked to copy text (OSC 52), e.g. Claude Code's copy command.
+                if let Some(text) = clip {
+                    dispatch2::DispatchQueue::main().exec_async(move || {
+                        let pb = objc2_app_kit::NSPasteboard::generalPasteboard();
+                        pb.clearContents();
+                        pb.setString_forType(
+                            &objc2_foundation::NSString::from_str(&text),
+                            unsafe { objc2_app_kit::NSPasteboardTypeString },
+                        );
+                    });
+                }
                 if !responses.is_empty() {
                     let _ = pty.lock().unwrap().write(&responses);
                 }
