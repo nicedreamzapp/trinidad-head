@@ -89,6 +89,13 @@ define_class!(
         fn will_terminate(&self, _note: &objc2_foundation::NSNotification) {
             selftest::on_terminate();
             control::cleanup(window_token());
+            // Hang up on the shell and everything it runs (the process group it leads).
+            let pid = SHELL_PID.load(Ordering::Relaxed);
+            if pid > 0 {
+                unsafe {
+                    libc::kill(-pid, libc::SIGHUP);
+                }
+            }
         }
     }
 );
@@ -179,6 +186,7 @@ pub fn run() {
             return;
         }
     };
+    SHELL_PID.store(pty.pid() as i32, Ordering::Relaxed);
     let shared = Arc::new(Mutex::new(Shared { term: Terminal::new(80, 24), last_output: None }));
     let pty = Arc::new(Mutex::new(pty));
     if let Some(line) = initial_input.filter(|l| !l.is_empty()) {
@@ -232,6 +240,7 @@ pub fn run() {
     window.makeKeyAndOrderFront(None);
     #[allow(deprecated)]
     app.activateIgnoringOtherApps(true);
+    quit_on_signals();
     if let Ok(mode) = std::env::var("TRINIDAD_HEAD_SELFTEST") {
         selftest::start(&mode, window.retain(), view.clone());
     }
@@ -269,6 +278,49 @@ fn reader_loop(mut output: std::fs::File, shared: Arc<Mutex<Shared>>, pty: Arc<M
         }
     }
     close_window_soon();
+}
+
+static SHELL_PID: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
+
+static SIGNAL_PIPE: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(-1);
+
+extern "C" fn on_signal(_sig: libc::c_int) {
+    let fd = SIGNAL_PIPE.load(Ordering::Relaxed);
+    if fd >= 0 {
+        unsafe {
+            libc::write(fd, b"x".as_ptr() as *const libc::c_void, 1);
+        }
+    }
+}
+
+/// SIGTERM / SIGHUP / SIGINT close the window the normal way, so the shell is hung up on and
+/// the control socket and window entry are removed.
+fn quit_on_signals() {
+    let mut fds = [0 as libc::c_int; 2];
+    if unsafe { libc::pipe(fds.as_mut_ptr()) } != 0 {
+        return;
+    }
+    SIGNAL_PIPE.store(fds[1], Ordering::Relaxed);
+    unsafe {
+        for sig in [libc::SIGTERM, libc::SIGHUP, libc::SIGINT] {
+            libc::signal(sig, on_signal as *const () as libc::sighandler_t);
+        }
+    }
+    let read_fd = fds[0];
+    std::thread::spawn(move || {
+        let mut b = [0u8; 1];
+        if unsafe { libc::read(read_fd, b.as_mut_ptr() as *mut libc::c_void, 1) } == 1 {
+            dispatch2::DispatchQueue::main().exec_async(|| {
+                if let Some(mtm) = MainThreadMarker::new() {
+                    NSApplication::sharedApplication(mtm).terminate(None);
+                }
+            });
+            // If the main thread is stuck, don't hang around forever.
+            std::thread::sleep(std::time::Duration::from_secs(5));
+            control::cleanup(window_token());
+            std::process::exit(0);
+        }
+    });
 }
 
 /// Close the window (which quits the app) on the main thread.

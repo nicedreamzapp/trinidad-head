@@ -361,7 +361,15 @@ impl TermView {
             meter: Meter::new(log),
             started,
             first_frame_logged: false,
-            dump_path: std::env::var_os("TRINIDAD_HEAD_DUMP").map(std::path::PathBuf::from),
+            dump_path: std::env::var_os("TRINIDAD_HEAD_DUMP").map(std::path::PathBuf::from).or_else(|| {
+                // Test hook for launcher checks: while ~/.trinidad-head/dump-all exists, every new
+                // window writes its screen text to ~/.trinidad-head/dumps/<pid>.txt.
+                let base = std::path::PathBuf::from(std::env::var_os("HOME")?).join(".trinidad-head");
+                base.join("dump-all").exists().then(|| {
+                    let _ = std::fs::create_dir_all(base.join("dumps"));
+                    base.join("dumps").join(format!("{}.txt", std::process::id()))
+                })
+            }),
             last_dump: Instant::now(),
             tracking: None,
             mouse_reported: false,

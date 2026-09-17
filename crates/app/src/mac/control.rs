@@ -78,6 +78,29 @@ pub fn register(glow: usize, token: &str) {
     let dir = windows_dir();
     let _ = std::fs::create_dir_all(&dir);
     let _ = std::fs::write(dir.join(std::process::id().to_string()), format!("glow={glow}\ntoken={token}\n"));
+    prune_sockets();
+}
+
+/// Remove sockets left by windows that were killed before they could clean up.
+fn prune_sockets() {
+    let _ = glows_in_use(); // drops entries of dead windows
+    let mut live = Vec::new();
+    if let Ok(dir) = std::fs::read_dir(windows_dir()) {
+        for e in dir.flatten() {
+            if let Ok(t) = std::fs::read_to_string(e.path()) {
+                live.extend(t.lines().filter_map(|l| l.strip_prefix("token=").map(str::to_string)));
+            }
+        }
+    }
+    let Ok(dir) = std::fs::read_dir(base()) else { return };
+    for e in dir.flatten() {
+        let name = e.file_name().to_string_lossy().into_owned();
+        if let Some(tok) = name.strip_suffix(".sock") {
+            if !live.iter().any(|l| l == tok) {
+                let _ = std::fs::remove_file(e.path());
+            }
+        }
+    }
 }
 
 /// Remove this window's socket and registry entry.
