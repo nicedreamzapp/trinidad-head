@@ -51,11 +51,8 @@ pub const BUTTONS: [Button; 6] = [
     Button::Glow,
 ];
 
-/// The sidebar's buttons, top to bottom. The Mac has only the glow (color) button: files are
-/// dropped straight onto the window there, so the terminal and folder icons were just clutter.
-#[cfg(not(target_os = "macos"))]
-pub const SIDEBAR: &[Button] = &[Button::Terminal, Button::Folder, Button::Glow];
-#[cfg(target_os = "macos")]
+/// The sidebar's buttons, top to bottom. Only the glow (color) button: files are dropped
+/// straight onto the window, so the terminal and folder icons were just clutter.
 pub const SIDEBAR: &[Button] = &[Button::Glow];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

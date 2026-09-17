@@ -15,6 +15,8 @@ mod gfx;
 mod layout;
 #[cfg_attr(not(windows), allow(dead_code))]
 mod theme;
+#[allow(dead_code)]
+mod textutil;
 #[cfg(windows)]
 mod win;
 #[cfg(target_os = "macos")]

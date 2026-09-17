@@ -788,7 +788,7 @@ impl TermView {
             }
             all.extend(c);
         }
-        super::textutil::url_at(&all, at)
+        crate::textutil::url_at(&all, at)
     }
 
     fn open_link(&self, link: &str) {
@@ -1460,7 +1460,7 @@ impl TermView {
                 let room = cols - cc.min(cols);
                 let (start_col, first) = if room >= 12 { (cc, room) } else { (0, cols) };
                 let start_row = if room >= 12 { cr } else { cr + 1 };
-                let lines = super::textutil::wrap(&st.marked, first, cols);
+                let lines = crate::textutil::wrap(&st.marked, first, cols);
                 let last_row = start_row + lines.len();
                 let shift = last_row.saturating_sub(term.rows());
                 let base = start_row.saturating_sub(shift);

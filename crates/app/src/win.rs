@@ -28,15 +28,16 @@ use windows::Win32::Graphics::Dwm::{
     DwmSetWindowAttribute, DWMWA_BORDER_COLOR, DWMWA_COLOR_NONE, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_DONOTROUND,
 };
 use windows::Win32::Graphics::Gdi::{BeginPaint, EndPaint, ScreenToClient, PAINTSTRUCT};
-use windows::Win32::System::DataExchange::{CloseClipboard, GetClipboardData, OpenClipboard};
+use windows::Win32::System::DataExchange::{CloseClipboard, GetClipboardData, IsClipboardFormatAvailable, OpenClipboard};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Memory::{GlobalLock, GlobalUnlock};
 use windows::Win32::UI::Controls::WM_MOUSELEAVE;
+use windows::Win32::UI::Shell::{DragAcceptFiles, DragFinish, DragQueryFileW, ShellExecuteW, HDROP};
 use windows::Win32::UI::HiDpi::{
     GetDpiForWindow, GetSystemMetricsForDpi, SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    GetKeyState, ReleaseCapture, SetCapture, TrackMouseEvent, TME_LEAVE, TRACKMOUSEEVENT, VIRTUAL_KEY, VK_CONTROL,
+    GetKeyState, ReleaseCapture, SetCapture, SetFocus, TrackMouseEvent, TME_LEAVE, TRACKMOUSEEVENT, VIRTUAL_KEY, VK_CONTROL,
     VK_DELETE, VK_DOWN, VK_END, VK_F1, VK_F10, VK_F11, VK_F12, VK_F2, VK_F3, VK_F4, VK_F5, VK_F6, VK_F7, VK_F8, VK_F9,
     VK_HOME, VK_INSERT, VK_LEFT, VK_MENU, VK_NEXT, VK_PRIOR, VK_RIGHT, VK_SHIFT, VK_SPACE, VK_UP,
 };
@@ -48,6 +49,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
     WHEEL_DELTA, WM_APP, WM_CHAR, WM_CLOSE, WM_DESTROY, WM_DPICHANGED, WM_KEYDOWN, WM_KILLFOCUS, WM_LBUTTONDOWN,
     WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCACTIVATE, WM_NCCALCSIZE, WM_NCHITTEST, WM_PAINT, WM_RBUTTONUP,
     WM_SETFOCUS, WM_SIZE, WM_SYSCHAR, WM_SYSKEYDOWN, WNDCLASSW, WS_EX_NOREDIRECTIONBITMAP, WS_OVERLAPPEDWINDOW,
+    AppendMenuW, CreatePopupMenu, DestroyMenu, GetCursorPos, SetForegroundWindow, TrackPopupMenu, MF_GRAYED,
+    MF_SEPARATOR, MF_STRING, SW_SHOWNORMAL, TPM_RETURNCMD, TPM_RIGHTBUTTON, WM_DROPFILES,
 };
 use windows_numerics::{Matrix3x2, Vector2};
 
@@ -114,6 +117,9 @@ struct App {
     skip_char: bool,
     /// A button press we reported to the program (Claude's fullscreen view wants the mouse).
     mouse_reported: bool,
+    /// A press the program wants, held back until we know it is a click (sent to the program)
+    /// and not a drag (a text selection here): screen cell, text point.
+    pending_press: Option<((usize, usize), (usize, usize))>,
     meter: crate::latency::Meter,
     last_title: Instant,
     started: Instant,
@@ -127,6 +133,8 @@ thread_local! {
 }
 
 static PAINT_QUEUED: AtomicBool = AtomicBool::new(false);
+/// Shell output arrived while a handler of ours was still running (see `wndproc`).
+static MISSED_OUTPUT: AtomicBool = AtomicBool::new(false);
 
 pub fn run() {
     let started = Instant::now();
@@ -268,6 +276,7 @@ pub fn run() {
             selecting: false,
             skip_char: false,
             mouse_reported: false,
+            pending_press: None,
             meter: crate::latency::Meter::new(log),
             last_title: Instant::now(),
             started,
@@ -285,6 +294,8 @@ pub fn run() {
         let hwnd_raw = hwnd.0 as isize;
         std::thread::spawn(move || reader_loop(output, shared, pty_for_reader, hwnd_raw));
 
+        // Files dropped on the window arrive as WM_DROPFILES.
+        DragAcceptFiles(hwnd, true);
         APP.with(|a| *a.borrow_mut() = Some(app));
         let _ = ShowWindow(hwnd, windows::Win32::UI::WindowsAndMessaging::SW_SHOW);
 
@@ -382,9 +393,23 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
         _ => {}
     }
     let handled = APP.with(|cell| {
-        let Ok(mut guard) = cell.try_borrow_mut() else { return None };
+        let Ok(mut guard) = cell.try_borrow_mut() else {
+            // We're inside one of our own handlers (a menu's or a drop's message loop). Shell
+            // output can't be drawn now; note it so the outer handler asks again when done,
+            // otherwise the window stops repainting new output.
+            if msg == WM_TERM_OUTPUT {
+                MISSED_OUTPUT.store(true, Ordering::SeqCst);
+                return Some(LRESULT(0));
+            }
+            return None;
+        };
         let app = guard.as_mut()?;
-        app.handle(msg, wparam, lparam)
+        let r = app.handle(msg, wparam, lparam);
+        if MISSED_OUTPUT.swap(false, Ordering::SeqCst) {
+            PAINT_QUEUED.store(true, Ordering::SeqCst);
+            let _ = PostMessageW(Some(hwnd), WM_TERM_OUTPUT, WPARAM(0), LPARAM(0));
+        }
+        r
     });
     match handled {
         Some(r) => r,
@@ -484,7 +509,12 @@ impl App {
                     Some(LRESULT(0))
                 }
                 WM_RBUTTONUP => {
-                    self.paste();
+                    let (x, y) = xy(lparam);
+                    self.context_menu(x, y);
+                    Some(LRESULT(0))
+                }
+                WM_DROPFILES => {
+                    self.drop_files(HDROP(wparam.0 as *mut _));
                     Some(LRESULT(0))
                 }
                 WM_MOUSEMOVE => {
@@ -498,6 +528,16 @@ impl App {
                         self.tracking_mouse = TrackMouseEvent(&mut tme).is_ok();
                     }
                     let (x, y) = xy(lparam);
+                    if let Some((cell, p)) = self.pending_press {
+                        // Moved off the pressed cell: a drag, so select text here.
+                        if self.screen_cell(x, y) != cell {
+                            self.pending_press = None;
+                            self.sel = Some((p, self.cell_at(x, y)));
+                            self.selecting = true;
+                            self.render();
+                        }
+                        return Some(LRESULT(0));
+                    }
                     if self.mouse_reported {
                         if self.mouse_mode() >= 1002 {
                             self.report_mouse(32, x, y, true);
@@ -533,14 +573,22 @@ impl App {
                 WM_LBUTTONDOWN => {
                     let (x, y) = xy(lparam);
                     self.pressed = self.layout.button_at(x, y);
+                    const MK_CONTROL: usize = 0x0008;
+                    let ctrl = wparam.0 & MK_CONTROL != 0;
+                    let link = if ctrl && self.pressed.is_none() { self.link_at(x, y) } else { None };
                     if self.pressed.is_some() {
                         SetCapture(self.hwnd);
                         self.render();
+                    } else if let Some(link) = link {
+                        // Ctrl+click opens a link.
+                        self.open_link(&link);
                     } else if self.mouse_mode() > 0 && self.layout.text.contains(x, y) {
-                        // Claude's fullscreen view handles clicks (and its own copy) itself.
-                        self.report_mouse(0, x, y, true);
-                        self.mouse_reported = true;
+                        // The program handles clicks (Claude's fullscreen view), but a drag still
+                        // selects text here. Hold the press until we know which it is.
+                        self.pending_press = Some((self.screen_cell(x, y), self.cell_at(x, y)));
+                        self.sel = None;
                         SetCapture(self.hwnd);
+                        self.render();
                     } else if self.layout.in_body(x, y) {
                         // Start selecting text.
                         let p = self.cell_at(x, y);
@@ -553,6 +601,13 @@ impl App {
                 }
                 WM_LBUTTONUP => {
                     let (x, y) = xy(lparam);
+                    if let Some((cell, _)) = self.pending_press.take() {
+                        // It never moved off its cell: a plain click, which the program gets.
+                        let _ = ReleaseCapture();
+                        self.report_mouse_cell(0, cell, true);
+                        self.report_mouse_cell(0, cell, false);
+                        return Some(LRESULT(0));
+                    }
                     if self.mouse_reported {
                         self.mouse_reported = false;
                         let _ = ReleaseCapture();
@@ -562,10 +617,9 @@ impl App {
                     if self.selecting {
                         self.selecting = false;
                         let _ = ReleaseCapture();
-                        match self.sel {
-                            // Like most terminals: releasing the mouse copies what you selected.
-                            Some((a, b)) if a != b => self.copy_selection(),
-                            _ => self.sel = None,
+                        // Nothing is copied until Copy is picked (right-click menu or Ctrl+C).
+                        if matches!(self.sel, Some((a, b)) if a == b) {
+                            self.sel = None;
                         }
                         self.render();
                         return Some(LRESULT(0));
@@ -634,14 +688,25 @@ impl App {
         self.shared.lock().unwrap().term.mouse_tracking
     }
 
-    fn report_mouse(&mut self, button: u8, x: f32, y: f32, pressed: bool) {
+    /// The on-screen (column, row) under a pixel, as mouse reports count them.
+    fn screen_cell(&self, x: f32, y: f32) -> (usize, usize) {
         let t = self.layout.text;
-        let (cols, rows, sgr) = {
+        let (cols, rows) = {
             let st = self.shared.lock().unwrap();
-            (st.term.cols(), st.term.rows(), st.term.mouse_sgr)
+            (st.term.cols(), st.term.rows())
         };
         let col = ((x - t.l) / self.cell_w).floor().clamp(0.0, (cols - 1) as f32) as usize;
         let row = ((y - t.t) / self.cell_h).floor().clamp(0.0, (rows - 1) as f32) as usize;
+        (col, row)
+    }
+
+    fn report_mouse(&mut self, button: u8, x: f32, y: f32, pressed: bool) {
+        let cell = self.screen_cell(x, y);
+        self.report_mouse_cell(button, cell, pressed);
+    }
+
+    fn report_mouse_cell(&mut self, button: u8, (col, row): (usize, usize), pressed: bool) {
+        let sgr = self.shared.lock().unwrap().term.mouse_sgr;
         let bytes = if sgr {
             core_vt::sgr_mouse(button, col, row, pressed)
         } else {
@@ -657,6 +722,151 @@ impl App {
         let text = self.shared.lock().unwrap().term.text_between(a, b);
         if !text.is_empty() {
             unsafe { set_clipboard_text(self.hwnd, &text) };
+        }
+    }
+
+    /// Right-click menu: Open Link / Copy Link over a link, then Copy, Paste, Select All.
+    /// Nothing is copied or pasted until one is picked.
+    fn context_menu(&mut self, x: f32, y: f32) {
+        const OPEN: usize = 1;
+        const COPY_LINK: usize = 2;
+        const COPY: usize = 3;
+        const PASTE: usize = 4;
+        const SELECT_ALL: usize = 5;
+        let link = self.link_at(x, y);
+        let has_sel = matches!(self.sel, Some((a, b)) if a != b);
+        let has_clip = unsafe { IsClipboardFormatAvailable(CF_UNICODETEXT).is_ok() };
+        let mut items: Vec<(usize, &str, bool)> = Vec::new();
+        if link.is_some() {
+            items.push((OPEN, "Open Link", true));
+            items.push((COPY_LINK, "Copy Link", true));
+            items.push((0, "", false));
+        }
+        items.push((COPY, "Copy", has_sel));
+        items.push((PASTE, "Paste", has_clip));
+        items.push((SELECT_ALL, "Select All", true));
+        // Test hook: the menu's items, next to the screen dump.
+        if let Some(p) = &self.dump_path {
+            let list: Vec<String> = items.iter().map(|(_, t, on)| format!("{t}={}", *on as u8)).collect();
+            let _ = std::fs::write(p.with_extension("menu"), list.join("\n"));
+        }
+        let cmd = unsafe {
+            let Ok(menu) = CreatePopupMenu() else { return };
+            for (id, title, enabled) in &items {
+                if *id == 0 {
+                    let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
+                    continue;
+                }
+                let t = wide(title);
+                let flags = if *enabled { MF_STRING } else { MF_STRING | MF_GRAYED };
+                let _ = AppendMenuW(menu, flags, *id, PCWSTR(t.as_ptr()));
+            }
+            let mut pt = POINT::default();
+            let _ = GetCursorPos(&mut pt);
+            // The menu runs its own message loop; our handler is busy until it returns, so
+            // output that arrives meanwhile is picked up below.
+            let cmd = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON, pt.x, pt.y, None, self.hwnd, None).0 as usize;
+            let _ = DestroyMenu(menu);
+            cmd
+        };
+        match cmd {
+            OPEN => {
+                if let Some(l) = &link {
+                    self.open_link(l);
+                }
+            }
+            COPY_LINK => {
+                if let Some(l) = &link {
+                    unsafe { set_clipboard_text(self.hwnd, l) };
+                }
+            }
+            COPY => {
+                self.copy_selection();
+                self.sel = None;
+            }
+            PASTE => self.paste(),
+            SELECT_ALL => {
+                let st = self.shared.lock().unwrap();
+                let (total, cols) = (st.term.total_lines(), st.term.cols());
+                drop(st);
+                self.sel = Some(((0, 0), (total.saturating_sub(1), cols.saturating_sub(1))));
+            }
+            _ => {}
+        }
+        self.render();
+    }
+
+    /// The web link under a pixel in the text area, following it across wrapped rows.
+    fn link_at(&self, x: f32, y: f32) -> Option<String> {
+        if !self.layout.text.contains(x, y) {
+            return None;
+        }
+        let (line_i, col) = self.cell_at(x, y);
+        let st = self.shared.lock().unwrap();
+        let term = &st.term;
+        let chars = |i: usize| -> Vec<char> {
+            term.abs_line(i).iter().map(|c| if c.spacer { '\0' } else { c.ch }).collect()
+        };
+        let joins = |a: &[char], b: &[char]| {
+            a.len() >= term.cols()
+                && a.last().is_some_and(|c| !c.is_whitespace() && *c != '\0')
+                && b.first().is_some_and(|c| !c.is_whitespace() && *c != '\0')
+        };
+        let mut first = line_i;
+        while first > 0 && line_i - first < 4 && joins(&chars(first - 1), &chars(first)) {
+            first -= 1;
+        }
+        let mut last = line_i;
+        while last + 1 < term.total_lines() && last - line_i < 4 && joins(&chars(last), &chars(last + 1)) {
+            last += 1;
+        }
+        let mut all = Vec::new();
+        let mut at = col;
+        for i in first..=last {
+            let c = chars(i);
+            if i < line_i {
+                at += c.len();
+            }
+            all.extend(c);
+        }
+        crate::textutil::url_at(&all, at)
+    }
+
+    fn open_link(&self, link: &str) {
+        if let Some(p) = &self.dump_path {
+            let _ = std::fs::write(p.with_extension("link"), link);
+        }
+        if std::env::var_os("TRINIDAD_HEAD_SELFTEST").is_some() {
+            return;
+        }
+        let url = wide(link);
+        unsafe {
+            ShellExecuteW(Some(self.hwnd), w!("open"), PCWSTR(url.as_ptr()), PCWSTR::null(), PCWSTR::null(), SW_SHOWNORMAL);
+        }
+    }
+
+    /// Files dropped on the window are typed in as paths (quoted when they hold spaces, like
+    /// Windows Terminal), which Claude Code turns into attached images.
+    fn drop_files(&mut self, drop: HDROP) {
+        let mut paths = Vec::new();
+        unsafe {
+            let n = DragQueryFileW(drop, u32::MAX, None);
+            for i in 0..n {
+                let len = DragQueryFileW(drop, i, None) as usize;
+                let mut buf = vec![0u16; len + 1];
+                let got = DragQueryFileW(drop, i, Some(&mut buf)) as usize;
+                let path = String::from_utf16_lossy(&buf[..got]);
+                paths.push(if path.contains(' ') { format!("\"{path}\"") } else { path });
+            }
+            DragFinish(drop);
+        }
+        if paths.is_empty() {
+            return;
+        }
+        self.paste_text(&(paths.join(" ") + " "));
+        unsafe {
+            let _ = SetForegroundWindow(self.hwnd);
+            let _ = SetFocus(Some(self.hwnd));
         }
     }
 
@@ -784,6 +994,10 @@ impl App {
     fn paste(&mut self) {
         let text = unsafe { clipboard_text() };
         let Some(text) = text else { return };
+        self.paste_text(&text);
+    }
+
+    fn paste_text(&mut self, text: &str) {
         let text = text.replace("\r\n", "\r").replace('\n', "\r");
         let bracketed = self.shared.lock().unwrap().term.bracketed_paste;
         let mut out = Vec::with_capacity(text.len() + 12);
@@ -1119,8 +1333,11 @@ impl App {
                     self.icon(&dc, &brush, glyph, x, y, true);
                 }
             }
-            // Sidebar: terminal (active), files, glow color.
+            // Sidebar: only the buttons this build shows (the glow color).
             for (b, glyph) in [(Button::Terminal, '\u{E756}'), (Button::Folder, '\u{E8B7}'), (Button::Glow, '\u{E790}')] {
+                if !crate::layout::SIDEBAR.contains(&b) {
+                    continue;
+                }
                 let (x, y, r) = l.button(b);
                 if b == Button::Terminal || self.hover == Some(b) {
                     let a = if b == Button::Terminal { 0.10 } else { 0.07 };
