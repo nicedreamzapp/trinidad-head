@@ -972,15 +972,15 @@ impl TermView {
         let default_fg = rgba(theme::TEXT, 1.0);
         let sel = st.sel.map(|(a, b)| if a <= b { (a, b) } else { (b, a) });
         let (ur, ug, ub) = st.user_bar;
-        let bar_color = Color::Rgb(ur, ug, ub);
+        let is_bar = |c: Color| matches!(c, Color::Rgb(r, g, b) if theme::is_prompt_bar((r, g, b), (ur, ug, ub)));
         let bar_hex = (ur as u32) << 16 | (ug as u32) << 8 | ub as u32;
 
         // Claude's prompt bar: one rounded see-through pill per block of rows, with the text
         // inside drawn one size bigger (same rules as the Windows build).
         let bar_span = |row: usize| -> Option<(usize, usize)> {
             let line = term.line(row, offset);
-            let first = line.iter().position(|c| c.attrs.bg == bar_color)?;
-            let last = line.iter().rposition(|c| c.attrs.bg == bar_color)?;
+            let first = line.iter().position(|c| is_bar(c.attrs.bg))?;
+            let last = line.iter().rposition(|c| is_bar(c.attrs.bg))?;
             Some((first, last + 1))
         };
         let text_end = |row: usize, from: usize| -> usize {
@@ -988,7 +988,7 @@ impl TermView {
             line.iter()
                 .enumerate()
                 .rev()
-                .find(|(i, c)| *i >= from && c.attrs.bg == bar_color && c.ch != ' ' && !c.spacer)
+                .find(|(i, c)| *i >= from && is_bar(c.attrs.bg) && c.ch != ' ' && !c.spacer)
                 .map(|(i, _)| i + 1)
                 .unwrap_or(from)
         };
@@ -1060,7 +1060,7 @@ impl TermView {
                         break;
                     }
                 }
-                let user_bar = attrs.bg == Color::Rgb(ur, ug, ub);
+                let user_bar = matches!(attrs.bg, Color::Rgb(r, g, b) if theme::is_prompt_bar((r, g, b), (ur, ug, ub)));
                 let (mut fg, bg) = colors(&attrs, default_fg);
                 let mut run_attrs = attrs;
                 if user_bar {

@@ -75,6 +75,14 @@ pub fn settings_text(glow: usize) -> String {
     format!("# Trinidad Head settings\nglow={}\n", GLOWS[glow % GLOWS.len()].name)
 }
 
+/// Claude's own "your message" bar colors (dark theme, plus its hover shade). Treated as the
+/// prompt bar too, so the pill and green text show up even before Claude picks up our theme.
+pub const CLAUDE_DEFAULT_BARS: [(u8, u8, u8); 2] = [(55, 55, 55), (70, 70, 70)];
+
+pub fn is_prompt_bar(rgb: (u8, u8, u8), user_bar: (u8, u8, u8)) -> bool {
+    rgb == user_bar || CLAUDE_DEFAULT_BARS.contains(&rgb)
+}
+
 /// The prompt-bar color from Claude's theme file text, so the two never drift apart.
 pub fn user_bar_from_theme(text: &str) -> Option<(u8, u8, u8)> {
     let key = text.find("\"userMessageBackground\"")?;

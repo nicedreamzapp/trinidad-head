@@ -1169,11 +1169,11 @@ impl App {
             // Claude's prompt bar: drawn as one rounded pill per block of rows instead of
             // square cell backgrounds (Matt, 2026-09-17).
             let (ur, ug, ub) = self.user_bar;
-            let bar_color = Color::Rgb(ur, ug, ub);
+            let is_bar = |c: Color| matches!(c, Color::Rgb(r, g, b) if theme::is_prompt_bar((r, g, b), (ur, ug, ub)));
             let bar_span = |row: usize| -> Option<(usize, usize)> {
                 let line = term.line(row, offset);
-                let first = line.iter().position(|c| c.attrs.bg == bar_color)?;
-                let last = line.iter().rposition(|c| c.attrs.bg == bar_color)?;
+                let first = line.iter().position(|c| is_bar(c.attrs.bg))?;
+                let last = line.iter().rposition(|c| is_bar(c.attrs.bg))?;
                 Some((first, last + 1))
             };
             // Per row inside a pill: (pill text left edge, horizontal scale) for the bigger text.
@@ -1183,7 +1183,7 @@ impl App {
                 line.iter()
                     .enumerate()
                     .rev()
-                    .find(|(i, c)| *i >= from && c.attrs.bg == bar_color && c.ch != ' ' && !c.spacer)
+                    .find(|(i, c)| *i >= from && is_bar(c.attrs.bg) && c.ch != ' ' && !c.spacer)
                     .map(|(i, _)| i + 1)
                     .unwrap_or(from)
             };
@@ -1263,7 +1263,7 @@ impl App {
                     }
                     let (mut fg, bg) = colors(&attrs, default_fg);
                     let (ur, ug, ub) = self.user_bar;
-                    let user_bar = attrs.bg == Color::Rgb(ur, ug, ub);
+                    let user_bar = matches!(attrs.bg, Color::Rgb(r, g, b) if theme::is_prompt_bar((r, g, b), (ur, ug, ub)));
                     let mut run_attrs = attrs;
                     if user_bar {
                         fg = rgb(theme::USER_TEXT);
