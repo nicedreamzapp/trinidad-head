@@ -61,7 +61,8 @@ use crate::theme::{self, GLOWS};
 const WM_TERM_OUTPUT: u32 = WM_APP + 1;
 const WM_TERM_EXITED: u32 = WM_APP + 2;
 const CF_UNICODETEXT: u32 = 13;
-const FONT_DIP: f32 = 13.0;
+// One size up from 13 (Matt, 2026-09-17: terminal text has always been too small to read).
+const FONT_DIP: f32 = 15.0;
 const APP_NAME: &str = "Trinidad Head";
 
 /// State shared between the window thread and the shell-reader thread.
