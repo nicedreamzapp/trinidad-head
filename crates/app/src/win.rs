@@ -1063,6 +1063,17 @@ impl App {
                 let last = line.iter().rposition(|c| c.attrs.bg == bar_color)?;
                 Some((first, last + 1))
             };
+            // Per row inside a pill: (pill text left edge, horizontal scale) for the bigger text.
+            let mut row_scale: Vec<Option<(f32, f32)>> = vec![None; term.rows()];
+            let text_end = |row: usize, from: usize| -> usize {
+                let line = term.line(row, offset);
+                line.iter()
+                    .enumerate()
+                    .rev()
+                    .find(|(i, c)| *i >= from && c.attrs.bg == bar_color && c.ch != ' ' && !c.spacer)
+                    .map(|(i, _)| i + 1)
+                    .unwrap_or(from)
+            };
             let mut row = 0;
             while row < term.rows() {
                 let Some(mut span) = bar_span(row) else {
@@ -1079,6 +1090,13 @@ impl App {
                         }
                         None => break,
                     }
+                }
+                let used = (start_row..row).map(|r| text_end(r, span.0)).max().unwrap_or(span.0);
+                let room = (span.1 - span.0) as f32 - 1.0;
+                let need = (used - span.0).max(1) as f32;
+                let sx = theme::USER_TEXT_SCALE.min(room / need).max(1.0);
+                for r in start_row..row {
+                    row_scale[r] = Some((left + span.0 as f32 * cw, sx));
                 }
                 let t = top + start_row as f32 * ch;
                 let b = top + row as f32 * ch;
@@ -1147,10 +1165,11 @@ impl App {
                     if text.iter().any(|&u| u != b' ' as u16) {
                         brush.SetColor(&fg);
                         if user_bar {
-                            // Taller letters around the row's middle; widths stay on the grid.
-                            let k = theme::USER_TEXT_STRETCH;
+                            // One size bigger, grown from the pill's left edge and the row's middle.
+                            let (pl, sx) = row_scale[row].unwrap_or((x0, 1.0));
+                            let sy = theme::USER_TEXT_SCALE;
                             let cy = y + ch / 2.0;
-                            dc.SetTransform(&Matrix3x2 { M11: 1.0, M12: 0.0, M21: 0.0, M22: k, M31: 0.0, M32: cy - k * cy });
+                            dc.SetTransform(&Matrix3x2 { M11: sx, M12: 0.0, M21: 0.0, M22: sy, M31: pl - sx * pl, M32: cy - sy * cy });
                             self.draw_text(&dc, &brush, &text, &run_attrs, x0, y, x1 + cw);
                             dc.SetTransform(&Matrix3x2 { M11: 1.0, M12: 0.0, M21: 0.0, M22: 1.0, M31: 0.0, M32: 0.0 });
                         } else {

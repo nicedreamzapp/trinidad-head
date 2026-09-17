@@ -36,8 +36,9 @@ pub const USER_BAR: (u8, u8, u8) = (0xC4, 0xD6, 0xE6);
 pub const USER_TEXT: u32 = 0x4E9F6B;
 /// The pill is see-through glass tinted with the bar color (Matt: "too white, more clear").
 pub const USER_BAR_ALPHA: f32 = 0.26;
-/// How much taller Matt's prompt text is drawn (width stays on the grid).
-pub const USER_TEXT_STRETCH: f32 = 1.22;
+/// How much bigger Matt's prompt text is drawn: one size up (Matt, 2026-09-17). Widths shrink
+/// back toward the grid only if a long line would otherwise run past the pill.
+pub const USER_TEXT_SCALE: f32 = 1.18;
 pub const ICON: u32 = 0xA9B0BD;
 
 pub fn by_name(name: &str) -> usize {
