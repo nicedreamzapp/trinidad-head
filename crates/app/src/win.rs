@@ -106,6 +106,8 @@ struct App {
     high_surrogate: Option<u16>,
     /// Selected text as (line, column) points; lines count from the top of history.
     sel: Option<((usize, usize), (usize, usize))>,
+    /// Claude's prompt-bar color, read from its theme file at startup.
+    user_bar: (u8, u8, u8),
     selecting: bool,
     skip_char: bool,
     meter: crate::latency::Meter,
@@ -246,6 +248,11 @@ pub fn run() {
             tracking_mouse: false,
             high_surrogate: None,
             sel: None,
+            user_bar: std::env::var("USERPROFILE")
+                .ok()
+                .and_then(|h| std::fs::read_to_string(std::path::Path::new(&h).join(".claude/themes/trinidad-head.json")).ok())
+                .and_then(|t| theme::user_bar_from_theme(&t))
+                .unwrap_or(theme::USER_BAR),
             selecting: false,
             skip_char: false,
             meter: crate::latency::Meter::new(log),
@@ -1083,7 +1090,7 @@ impl App {
                         }
                     }
                     let (mut fg, bg) = colors(&attrs, default_fg);
-                    let (ur, ug, ub) = theme::USER_BAR;
+                    let (ur, ug, ub) = self.user_bar;
                     let user_bar = attrs.bg == Color::Rgb(ur, ug, ub);
                     let mut run_attrs = attrs;
                     if user_bar {

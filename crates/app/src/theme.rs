@@ -32,7 +32,7 @@ pub const TEXT: u32 = 0xD7DBE3;
 /// Claude Code's "your message" bar. The PC's Claude theme (~/.claude/themes/trinidad-head.json)
 /// paints it this exact color; cells on it get dark green, bold, taller text so Matt's own
 /// prompts stand out when scrolling back (2026-09-17, his pick: sample 8).
-pub const USER_BAR: (u8, u8, u8) = (0xA5, 0xD8, 0xFF);
+pub const USER_BAR: (u8, u8, u8) = (0xC4, 0xD6, 0xE6);
 pub const USER_TEXT: u32 = 0x0B3D20;
 /// How much taller Matt's prompt text is drawn (width stays on the grid).
 pub const USER_TEXT_STRETCH: f32 = 1.22;
@@ -55,9 +55,26 @@ pub fn settings_text(glow: usize) -> String {
     format!("# Trinidad Head settings\nglow={}\n", GLOWS[glow % GLOWS.len()].name)
 }
 
+/// The prompt-bar color from Claude's theme file text, so the two never drift apart.
+pub fn user_bar_from_theme(text: &str) -> Option<(u8, u8, u8)> {
+    let key = text.find("\"userMessageBackground\"")?;
+    let rest = &text[key..];
+    let open = rest.find("rgb(")? + 4;
+    let close = rest[open..].find(')')? + open;
+    let mut parts = rest[open..close].split(',').map(|p| p.trim().parse::<u8>().ok());
+    Some((parts.next()??, parts.next()??, parts.next()??))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reads_bar_color_from_claude_theme() {
+        let t = r#"{"overrides": {"userMessageBackground": "rgb(196, 214,230)", "userMessageBackgroundHover": "rgb(1,2,3)"}}"#;
+        assert_eq!(user_bar_from_theme(t), Some((196, 214, 230)));
+        assert_eq!(user_bar_from_theme("{}"), None);
+    }
 
     #[test]
     fn round_trips_and_defaults() {
