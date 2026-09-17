@@ -13,7 +13,7 @@ use objc2_app_kit::{
     NSColor, NSCompositingOperation, NSCursor, NSCursorFrameResizeDirections,
     NSCursorFrameResizePosition, NSEvent, NSEventModifierFlags, NSFont, NSFontAttributeName,
     NSForegroundColorAttributeName, NSGraphicsContext, NSImage, NSImageSymbolConfiguration, NSMenu, NSMenuItem, NSPasteboard,
-    NSPasteboardTypeString, NSResponder, NSStringDrawing, NSTextInputClient, NSTrackingArea, NSTrackingAreaOptions,
+    NSPasteboardTypeFileURL, NSPasteboardTypeString, NSResponder, NSApplication, NSStringDrawing, NSTextInputClient, NSTrackingArea, NSTrackingAreaOptions,
     NSView, NSWorkspace,
 };
 use objc2_core_graphics::CGContext;
@@ -126,6 +126,37 @@ define_class!(
         #[unsafe(method(keyDown:))]
         fn key_down(&self, event: &NSEvent) {
             self.on_key_down(event);
+        }
+
+        // Drag and drop: files dropped on the window are typed in as shell-escaped paths
+        // (what Claude Code turns into an attached image), dropped text is pasted.
+        #[unsafe(method(draggingEntered:))]
+        fn dragging_entered(&self, info: &AnyObject) -> NSUInteger {
+            drop_operation(info)
+        }
+
+        #[unsafe(method(draggingUpdated:))]
+        fn dragging_updated(&self, info: &AnyObject) -> NSUInteger {
+            drop_operation(info)
+        }
+
+        #[unsafe(method(prepareForDragOperation:))]
+        fn prepare_for_drag_operation(&self, _info: &AnyObject) -> bool {
+            true
+        }
+
+        #[unsafe(method(performDragOperation:))]
+        fn perform_drag_operation(&self, info: &AnyObject) -> bool {
+            let pb: Retained<NSPasteboard> = unsafe { msg_send![info, draggingPasteboard] };
+            let ok = self.drop_pasteboard(&pb);
+            if ok {
+                if let Some(w) = self.window() {
+                    w.makeKeyAndOrderFront(None);
+                    w.makeFirstResponder(Some(self));
+                }
+                NSApplication::sharedApplication(self.mtm()).activate();
+            }
+            ok
         }
 
         // Dictation asks Accessibility whether a text field has focus; without these it says
@@ -311,6 +342,25 @@ define_class!(
     }
 );
 
+/// Copy (1) when the drag carries files or text, otherwise refuse it (0).
+fn drop_operation(info: &AnyObject) -> NSUInteger {
+    let pb: Retained<NSPasteboard> = unsafe { msg_send![info, draggingPasteboard] };
+    let types = unsafe { NSArray::from_slice(&[NSPasteboardTypeFileURL, NSPasteboardTypeString]) };
+    if pb.availableTypeFromArray(&types).is_some() { 1 } else { 0 }
+}
+
+/// Backslash-escape a path the way macOS terminals do when a file is dropped on them.
+pub fn shell_escape(path: &str) -> String {
+    let mut out = String::with_capacity(path.len() + 8);
+    for ch in path.chars() {
+        if "\\ ()[]{}<>\"'`!#$&;|*?\t".contains(ch) {
+            out.push('\\');
+        }
+        out.push(ch);
+    }
+    out
+}
+
 fn string_of(obj: &AnyObject) -> String {
     if let Some(s) = obj.downcast_ref::<NSString>() {
         return s.to_string();
@@ -438,7 +488,10 @@ impl TermView {
             folder_opened: false,
         };
         let this = Self::alloc(mtm).set_ivars(RefCell::new(state));
-        unsafe { msg_send![super(this), initWithFrame: frame] }
+        let this: Retained<Self> = unsafe { msg_send![super(this), initWithFrame: frame] };
+        let types = unsafe { NSArray::from_slice(&[NSPasteboardTypeFileURL, NSPasteboardTypeString]) };
+        this.registerForDraggedTypes(&types);
+        this
     }
 
     /// Recompute the layout and the terminal size from the view size.
@@ -624,7 +677,37 @@ impl TermView {
         let Some(text) = NSPasteboard::generalPasteboard().stringForType(unsafe { NSPasteboardTypeString }) else {
             return;
         };
-        let text = text.to_string().replace("\r\n", "\r").replace('\n', "\r");
+        self.paste_text(&text.to_string());
+    }
+
+    /// Type what a drag carries: files as escaped paths separated by spaces, else its text.
+    pub fn drop_pasteboard(&self, pb: &NSPasteboard) -> bool {
+        let mut paths = Vec::new();
+        for item in pb.pasteboardItems().map(|a| a.to_vec()).unwrap_or_default() {
+            let Some(s) = item.stringForType(unsafe { NSPasteboardTypeFileURL }) else { continue };
+            // Finder hands over file reference URLs (file:///.file/id=...); resolve them.
+            let path = NSURL::URLWithString(&s)
+                .and_then(|u| u.filePathURL())
+                .and_then(|u| u.path());
+            if let Some(path) = path {
+                paths.push(shell_escape(&path.to_string()));
+            }
+        }
+        if !paths.is_empty() {
+            self.paste_text(&(paths.join(" ") + " "));
+            return true;
+        }
+        match pb.stringForType(unsafe { NSPasteboardTypeString }) {
+            Some(text) => {
+                self.paste_text(&text.to_string());
+                true
+            }
+            None => false,
+        }
+    }
+
+    fn paste_text(&self, text: &str) {
+        let text = text.replace("\r\n", "\r").replace('\n', "\r");
         let bracketed = {
             let st = self.ivars().borrow();
             let v = st.shared.lock().unwrap().term.bracketed_paste;

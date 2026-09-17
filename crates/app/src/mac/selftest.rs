@@ -22,8 +22,8 @@ use block2::RcBlock;
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2::msg_send;
-use objc2_app_kit::{NSEvent, NSEventModifierFlags, NSEventType, NSPasteboard, NSPasteboardTypeString};
-use objc2_foundation::{NSNotFound, NSPoint, NSRange, NSRect, NSSize, NSString, NSTimer, NSUInteger};
+use objc2_app_kit::{NSEvent, NSEventModifierFlags, NSEventType, NSPasteboard, NSPasteboardTypeFileURL, NSPasteboardTypeString};
+use objc2_foundation::{NSNotFound, NSPoint, NSRange, NSRect, NSSize, NSString, NSTimer, NSUInteger, NSURL};
 
 use super::{THWindow, TermView};
 use crate::layout::{Button, Hit};
@@ -522,6 +522,25 @@ fn full_steps() -> Vec<Step> {
     s.push(act(0.3, |c| {
         c.check("folder button opens Finder", c.view.folder_opened(), "the folder did not open");
         c.window.makeKeyAndOrderFront(None);
+    }));
+
+    // Drag and drop: a dropped file arrives as an escaped path, bracketed like a paste.
+    s.push(act(0.3, |c| {
+        c.feed(b"\x1b[?2004h");
+        c.mark();
+        let pb = NSPasteboard::pasteboardWithUniqueName();
+        pb.clearContents();
+        let url = NSURL::fileURLWithPath(&NSString::from_str("/tmp/Screen Shot (1).png"));
+        let s = url.absoluteString().unwrap();
+        pb.setString_forType(&s, unsafe { NSPasteboardTypeFileURL });
+        let ok = c.view.drop_pasteboard(&pb);
+        let _: () = unsafe { msg_send![&*pb, releaseGlobally] };
+        c.check("a dropped file is accepted", ok, "drop refused");
+    }));
+    s.push(act(0.3, |c| {
+        let want = b"\x1b[200~/tmp/Screen\\ Shot\\ \\(1\\).png \x1b[201~".to_vec();
+        c.check("a dropped file is typed as an escaped path", c.captured() == want, show(&c.captured()));
+        c.feed(b"\x1b[?2004l");
     }));
 
     // 5-6. Selection and copy/paste.
