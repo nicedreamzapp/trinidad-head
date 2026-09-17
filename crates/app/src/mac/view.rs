@@ -3,7 +3,7 @@
 
 use std::cell::RefCell;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use core_vt::{Attrs, Cell, Color};
 use objc2::rc::Retained;
@@ -1129,7 +1129,8 @@ impl TermView {
 
         let now = Instant::now();
         let last_output = s.last_output;
-        let dump = st.dump_path.is_some() && now - st.last_dump > Duration::from_millis(250);
+        // Test hook: write every frame (throttling could leave the last frame unwritten).
+        let dump = st.dump_path.is_some();
         let dump_text = if dump {
             let mut out = String::new();
             for r in 0..term.rows() {

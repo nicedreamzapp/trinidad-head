@@ -144,6 +144,19 @@ SPECS = [
 ]
 
 
+# The mini (SPECSET=mini). "Switch to Gemma/Claude" change the mini's agent backend, so they
+# are not run; the Gemma server they switch to is checked directly instead.
+MINI_SPECS = [
+    dict(name="Claude Code.app", open=f"{HOME}/Desktop/Claude Code.app", kind="claude"),
+    dict(name="Divine Tribe HQ.app", open=f"{HOME}/Desktop/Divine Tribe HQ.app", kind="claude"),
+    dict(name="LLM Status.command", open=f"{HOME}/Desktop/LLM Status.command", kind="ready", ready="window closes in 15s", timeout=60),
+    dict(name="fastCAMO yolov8 .command (local YOLO model)", open=f"{HOME}/Desktop/fastCAMO Realtime/launch_yolov8_oiv7.command", kind="proc", proc="yolov8_oiv7_webcam", timeout=60),
+    dict(name="face-emotion .command (local model)", open=f"{HOME}/Desktop/face-emotion-realtime/launch_face_emotion.command", kind="proc", proc="face_emotion_webcam", timeout=60),
+]
+if os.environ.get("SPECSET") == "mini":
+    SPECS = MINI_SPECS
+
+
 def wait_until(test, timeout, step=0.5):
     end = time.time() + timeout
     while time.time() < end:
@@ -175,7 +188,8 @@ def check(spec):
             seen.setdefault(p, time.time())
         return next(iter(seen), None)
 
-    pid = wait_until(new_window, 25, 0.1)
+    pid = wait_until(new_window, 180, 0.1)
+    opened_after = time.time() - t0
     if not pid:
         log(f"FAIL {name}: no Trinidad Head window appeared")
         return
@@ -196,6 +210,10 @@ def check(spec):
     ready_ok, ready_detail = True, ""
     timeout = spec.get("timeout", 90)
     if kind == "claude":
+        # The mini's `claude` starts with a menu (1 = Claude Code); take the default.
+        if wait_until(lambda: "Choose [1/2]" in screen(pid) or "Claude Code v" in screen(pid), 30) and "Choose [1/2]" in screen(pid):
+            token = next((l[6:] for l in open(f"{REG}/{pid}").read().splitlines() if l.startswith("token=")), "")
+            sh(f"{HOME}/Scripts/trinidad-head/th-type {token} ''")
         r = wait_until(lambda: "Claude Code v" in screen(pid) and any("claude" in c for _, c in descendants(pid)), timeout)
         ready_ok = bool(r)
         m = re.search(r"Claude Code v[\d.]+", screen(pid))
@@ -213,6 +231,13 @@ def check(spec):
         r = wait_until(lambda: spec["ready"] in screen(pid), timeout, 2)
         ready_ok = bool(r)
         ready_detail = f"shows '{spec['ready']}'" if r else "not ready: " + " | ".join(l.strip() for l in screen(pid).splitlines() if l.strip())[-300:]
+    elif kind == "proc":
+        r = wait_until(lambda: next((cmd for _, cmd in descendants(pid) if spec["proc"] in cmd), None), timeout, 1)
+        time.sleep(8)
+        alive = any(spec["proc"] in cmd for _, cmd in descendants(pid))
+        text = " | ".join(l.strip() for l in screen(pid).splitlines() if l.strip())[-200:]
+        ready_ok = bool(r) and alive
+        ready_detail = ("model process running" if ready_ok else "model process did not stay up") + (f"; screen: {text}" if text else "")
     elif kind == "quick":
         # The .command window runs, then closes itself.
         closed = wait_until(lambda: not os.path.exists(f"{REG}/{pid}"), 20, 0.2)
@@ -227,12 +252,16 @@ def check(spec):
             ready_detail += "; Brave page opened" if opened else "; Brave page NOT opened"
             ready_ok &= bool(opened)
     if spec.get("health") and ready_ok:
-        h = http_json(f"http://127.0.0.1:{spec['health']}/health")
-        ready_detail += f"; server {spec['health']} health {h and h.get('status')}"
-        ready_ok &= bool(h and h.get("status") == "ok")
+        h = http_json(f"http://127.0.0.1:{spec['health']}/health", timeout=15)
+        listening = spec["health"] in listening_ports()
+        ready_detail += f"; model server :{spec['health']} {'healthy' if h and h.get('status') == 'ok' else 'listening' if listening else 'NOT running'}"
+        if h and h.get("model"):
+            ready_detail += f" ({h['model'].split('/')[-1]})"
+        ready_ok &= bool(listening)
     secs = time.time() - t0
 
     # Close what was opened.
+    stopped = []
     tree = descendants(pid)
     if os.path.exists(f"{REG}/{pid}"):
         try:
@@ -242,11 +271,21 @@ def check(spec):
     wait_until(lambda: not os.path.exists(f"{REG}/{pid}") and pid not in procs(), 10)
     time.sleep(3)
     rows = procs()
-    leftovers = [(c, cmd) for c, cmd in tree if c in rows and "restore" not in cmd]
+    # The launchers' own clean-up helpers (e.g. the watcher that brings Song Forge back) must
+    # be left to do their job.
+    leftovers = [(c, cmd) for c, cmd in tree if c in rows and "restore" not in cmd and "while kill -0" not in cmd]
     for port, p in listening_ports().items():
         if port not in before_ports and p not in before_procs and p != os.getpid():
             leftovers.append((p, rows.get(p, (0, f"port {port}"))[1]))
-    stopped = []
+    # A model server stopped here leaves its forge_guard lease behind; hand it back.
+    try:
+        st = json.loads(sh(f"/usr/bin/python3 {HOME}/SongForgeM5/mem_client.py state"))
+        for l in st.get("leases", []):
+            if l["gb"] >= 5 and l.get("granted", 0) >= t0 and l["name"] in ("localclaude", "gemma4-chat", "agent-gemma4", "agent-qwen38"):
+                sh(f"/usr/bin/python3 {HOME}/SongForgeM5/mem_client.py release {l['id']}")
+                stopped.append(f"lease {l['name']}")
+    except Exception:
+        pass
     for c, cmd in leftovers:
         # Song Forge coming back is intended; never touch it.
         if "SongForge" in cmd or "songforge" in cmd or re.search(r":(8001|8767|9420)\b", cmd):
@@ -267,7 +306,7 @@ def check(spec):
             ready_ok = False
     verdict = "PASS" if ok_shell and ready_ok else "FAIL"
     extra = f"; stopped {', '.join(sorted(set(stopped)))}" if stopped else ""
-    log(f"{verdict} {name} ({secs:.0f}s): {detail}; {ready_detail}{forge_note}{extra}")
+    log(f"{verdict} {name} (window after {opened_after:.0f}s, {secs:.0f}s total): {detail}; {ready_detail}{forge_note}{extra}")
 
 
 def main():
