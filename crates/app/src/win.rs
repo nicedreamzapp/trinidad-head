@@ -110,6 +110,8 @@ struct App {
     user_bar: (u8, u8, u8),
     selecting: bool,
     skip_char: bool,
+    /// A button press we reported to the program (Claude's fullscreen view wants the mouse).
+    mouse_reported: bool,
     meter: crate::latency::Meter,
     last_title: Instant,
     started: Instant,
@@ -255,6 +257,7 @@ pub fn run() {
                 .unwrap_or(theme::USER_BAR),
             selecting: false,
             skip_char: false,
+            mouse_reported: false,
             meter: crate::latency::Meter::new(log),
             last_title: Instant::now(),
             started,
@@ -358,6 +361,11 @@ impl App {
             match msg {
                 WM_TERM_OUTPUT => {
                     PAINT_QUEUED.store(false, Ordering::SeqCst);
+                    // A program copied something (Claude's fullscreen view does this on select).
+                    let clip = self.shared.lock().unwrap().term.take_clipboard();
+                    if let Some(text) = clip {
+                        set_clipboard_text(self.hwnd, &text);
+                    }
                     self.render();
                     Some(LRESULT(0))
                 }
@@ -393,6 +401,9 @@ impl App {
                 }
                 WM_SETFOCUS | WM_KILLFOCUS => {
                     self.focused = msg == WM_SETFOCUS;
+                    if self.shared.lock().unwrap().term.focus_events {
+                        let _ = self.pty.lock().unwrap().write(if self.focused { b"\x1b[I" } else { b"\x1b[O" });
+                    }
                     self.render();
                     Some(LRESULT(0))
                 }
@@ -412,6 +423,16 @@ impl App {
                 }
                 WM_MOUSEWHEEL => {
                     let delta = ((wparam.0 >> 16) as u16 as i16) as i32;
+                    if self.mouse_mode() > 0 {
+                        // Wheel events go to the program as buttons 64 (up) / 65 (down).
+                        let mut pt = POINT { x: (lparam.0 & 0xFFFF) as u16 as i16 as i32, y: ((lparam.0 >> 16) & 0xFFFF) as u16 as i16 as i32 };
+                        let _ = ScreenToClient(self.hwnd, &mut pt);
+                        let notches = (delta / WHEEL_DELTA as i32).unsigned_abs().max(1);
+                        for _ in 0..notches {
+                            self.report_mouse(if delta > 0 { 64 } else { 65 }, pt.x as f32, pt.y as f32, true);
+                        }
+                        return Some(LRESULT(0));
+                    }
                     let lines = (delta / WHEEL_DELTA as i32) * 3;
                     let max = self.shared.lock().unwrap().term.scrollback_len() as i32;
                     self.scroll_offset = (self.scroll_offset as i32 + lines).clamp(0, max) as usize;
@@ -433,6 +454,15 @@ impl App {
                         self.tracking_mouse = TrackMouseEvent(&mut tme).is_ok();
                     }
                     let (x, y) = xy(lparam);
+                    if self.mouse_reported {
+                        if self.mouse_mode() >= 1002 {
+                            self.report_mouse(32, x, y, true);
+                        }
+                        return Some(LRESULT(0));
+                    }
+                    if self.mouse_mode() == 1003 && self.layout.text.contains(x, y) {
+                        self.report_mouse(35, x, y, true);
+                    }
                     if self.selecting {
                         let p = self.cell_at(x, y);
                         if let Some(sel) = self.sel.as_mut() {
@@ -462,6 +492,11 @@ impl App {
                     if self.pressed.is_some() {
                         SetCapture(self.hwnd);
                         self.render();
+                    } else if self.mouse_mode() > 0 && self.layout.text.contains(x, y) {
+                        // Claude's fullscreen view handles clicks (and its own copy) itself.
+                        self.report_mouse(0, x, y, true);
+                        self.mouse_reported = true;
+                        SetCapture(self.hwnd);
                     } else if self.layout.in_body(x, y) {
                         // Start selecting text.
                         let p = self.cell_at(x, y);
@@ -474,6 +509,12 @@ impl App {
                 }
                 WM_LBUTTONUP => {
                     let (x, y) = xy(lparam);
+                    if self.mouse_reported {
+                        self.mouse_reported = false;
+                        let _ = ReleaseCapture();
+                        self.report_mouse(0, x, y, false);
+                        return Some(LRESULT(0));
+                    }
                     if self.selecting {
                         self.selecting = false;
                         let _ = ReleaseCapture();
@@ -537,6 +578,33 @@ impl App {
         let row = ((y - t.t) / self.cell_h).floor().clamp(0.0, (term.rows() - 1) as f32) as usize;
         let col = ((x - t.l) / self.cell_w).floor().clamp(0.0, (term.cols() - 1) as f32) as usize;
         (term.scrollback_len() - offset + row, col)
+    }
+
+    /// The program's mouse mode, unless Shift is held (Shift always means "let me select").
+    fn mouse_mode(&self) -> u16 {
+        let shift = unsafe { GetKeyState(VK_SHIFT.0 as i32) } < 0;
+        if shift {
+            return 0;
+        }
+        self.shared.lock().unwrap().term.mouse_tracking
+    }
+
+    fn report_mouse(&mut self, button: u8, x: f32, y: f32, pressed: bool) {
+        let t = self.layout.text;
+        let (cols, rows, sgr) = {
+            let st = self.shared.lock().unwrap();
+            (st.term.cols(), st.term.rows(), st.term.mouse_sgr)
+        };
+        let col = ((x - t.l) / self.cell_w).floor().clamp(0.0, (cols - 1) as f32) as usize;
+        let row = ((y - t.t) / self.cell_h).floor().clamp(0.0, (rows - 1) as f32) as usize;
+        let bytes = if sgr {
+            core_vt::sgr_mouse(button, col, row, pressed)
+        } else {
+            // Legacy X10 encoding: release is button 3, coordinates offset by 32.
+            let b = if pressed { button } else { 3 | (button & !3) };
+            vec![0x1b, b'[', b'M', 32 + b, (33 + col.min(222)) as u8, (33 + row.min(222)) as u8]
+        };
+        let _ = self.pty.lock().unwrap().write(&bytes);
     }
 
     fn copy_selection(&mut self) {
