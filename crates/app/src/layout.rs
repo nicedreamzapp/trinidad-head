@@ -37,21 +37,15 @@ pub enum Button {
     Close,
     Minimize,
     Zoom,
-    WinMinimize,
-    WinMaximize,
-    WinClose,
     Terminal,
     Folder,
     Glow,
 }
 
-pub const BUTTONS: [Button; 9] = [
+pub const BUTTONS: [Button; 6] = [
     Button::Close,
     Button::Minimize,
     Button::Zoom,
-    Button::WinMinimize,
-    Button::WinMaximize,
-    Button::WinClose,
     Button::Terminal,
     Button::Folder,
     Button::Glow,
@@ -79,7 +73,6 @@ pub struct Layout {
     pub body: Rect,
     pub radius: f32,
     pub lights_pill: Rect,
-    pub controls_pill: Rect,
     pub sidebar: Rect,
     /// Where terminal text goes.
     pub text: Rect,
@@ -98,7 +91,6 @@ impl Layout {
         let pill_h = 26.0 * s;
         let top = body.t + 14.0 * s;
         let lights_pill = Rect::new(body.l + 58.0 * s, top, 74.0 * s, pill_h);
-        let controls_pill = Rect::new(body.r - 58.0 * s - 104.0 * s, top, 104.0 * s, pill_h);
 
         let side_w = 40.0 * s;
         let side_h = (3.0 * 40.0 * s + 12.0 * s).min(body.h() - 90.0 * s).max(side_w);
@@ -110,23 +102,19 @@ impl Layout {
             r: body.r - 40.0 * s,
             b: body.b - 28.0 * s,
         };
-        Layout { scale, maximized, window, body, radius, lights_pill, controls_pill, sidebar, text }
+        Layout { scale, maximized, window, body, radius, lights_pill, sidebar, text }
     }
 
     /// Centre and radius of each round button.
     pub fn button(&self, b: Button) -> (f32, f32, f32) {
         let s = self.scale;
         let lp = self.lights_pill;
-        let cp = self.controls_pill;
         let sb = self.sidebar;
         let slot = |i: f32| sb.t + 6.0 * s + 20.0 * s + i * 40.0 * s;
         match b {
             Button::Close => (lp.l + 16.0 * s, lp.cy(), 6.0 * s),
             Button::Minimize => (lp.l + 37.0 * s, lp.cy(), 6.0 * s),
             Button::Zoom => (lp.l + 58.0 * s, lp.cy(), 6.0 * s),
-            Button::WinMinimize => (cp.l + 20.0 * s, cp.cy(), 12.0 * s),
-            Button::WinMaximize => (cp.cx(), cp.cy(), 12.0 * s),
-            Button::WinClose => (cp.r - 20.0 * s, cp.cy(), 12.0 * s),
             Button::Terminal => (sb.cx(), slot(0.0), 15.0 * s),
             Button::Folder => (sb.cx(), slot(1.0), 15.0 * s),
             Button::Glow => (sb.cx(), slot(2.0), 15.0 * s),

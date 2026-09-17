@@ -492,13 +492,13 @@ impl App {
     fn press(&mut self, b: Button) {
         unsafe {
             match b {
-                Button::Close | Button::WinClose => {
+                Button::Close => {
                     let _ = PostMessageW(Some(self.hwnd), WM_CLOSE, WPARAM(0), LPARAM(0));
                 }
-                Button::Minimize | Button::WinMinimize => {
+                Button::Minimize => {
                     let _ = ShowWindow(self.hwnd, SW_MINIMIZE);
                 }
-                Button::Zoom | Button::WinMaximize => {
+                Button::Zoom => {
                     let cmd = if IsZoomed(self.hwnd).as_bool() { SW_RESTORE } else { SW_MAXIMIZE };
                     let _ = ShowWindow(self.hwnd, cmd);
                 }
@@ -964,7 +964,7 @@ impl App {
                 radiusX: r.w().min(r.h()) / 2.0,
                 radiusY: r.w().min(r.h()) / 2.0,
             };
-            for r in [l.lights_pill, l.controls_pill, l.sidebar] {
+            for r in [l.lights_pill, l.sidebar] {
                 brush.SetColor(&D2D1_COLOR_F { a: 0.07, ..rgb(0xFFFFFF) });
                 dc.FillRoundedRectangle(&pill(r), &brush);
                 let edge = [
@@ -975,36 +975,25 @@ impl App {
                     dc.DrawRoundedRectangle(&pill(r), &e, 1.0, None);
                 }
             }
-            // Traffic lights: red, amber, and an open ring, like the design.
-            for (b, color) in [(Button::Close, 0xFF5F57), (Button::Minimize, 0xFEBC2E)] {
+            // Window buttons, macOS style: red closes, yellow minimizes, green maximizes.
+            for (b, color, glyph) in [
+                (Button::Close, 0xFF5F57, '\u{E8BB}'),
+                (Button::Minimize, 0xFEBC2E, '\u{E921}'),
+                (Button::Zoom, 0x28C840, if l.maximized { '\u{E73F}' } else { '\u{E740}' }),
+            ] {
                 let (x, y, r) = l.button(b);
-                let mut c = rgb(if self.focused || self.hover.is_some() { color } else { 0x5A5E68 });
+                let lit = self.focused || self.hover.is_some();
+                let mut c = rgb(if lit { color } else { 0x5A5E68 });
                 if self.pressed == Some(b) {
                     c = D2D1_COLOR_F { r: c.r * 0.75, g: c.g * 0.75, b: c.b * 0.75, a: 1.0 };
                 }
                 brush.SetColor(&c);
                 dc.FillEllipse(&ellipse(x, y, r), &brush);
-                if self.hover == Some(b) {
+                // Like macOS, the symbols appear when the pointer is over any of the three.
+                if matches!(self.hover, Some(Button::Close | Button::Minimize | Button::Zoom)) {
                     brush.SetColor(&D2D1_COLOR_F { a: 0.6, ..rgb(0x000000) });
-                    self.icon(&dc, &brush, if b == Button::Close { '\u{E8BB}' } else { '\u{E921}' }, x, y, true);
+                    self.icon(&dc, &brush, glyph, x, y, true);
                 }
-            }
-            {
-                let (x, y, r) = l.button(Button::Zoom);
-                brush.SetColor(&D2D1_COLOR_F { a: if self.hover == Some(Button::Zoom) { 1.0 } else { 0.75 }, ..rgb(0xE8ECF2) });
-                dc.DrawEllipse(&ellipse(x, y, r - 0.6 * s), &brush, 1.4 * s, None);
-            }
-            // Window controls on the right.
-            let maximized_glyph = if l.maximized { '\u{E923}' } else { '\u{E922}' };
-            for (b, glyph) in [(Button::WinMinimize, '\u{E921}'), (Button::WinMaximize, maximized_glyph), (Button::WinClose, '\u{E8BB}')] {
-                let (x, y, r) = l.button(b);
-                if self.hover == Some(b) {
-                    let bg = if b == Button::WinClose { D2D1_COLOR_F { a: 0.9, ..rgb(0xE5484D) } } else { D2D1_COLOR_F { a: 0.12, ..rgb(0xFFFFFF) } };
-                    brush.SetColor(&bg);
-                    dc.FillEllipse(&ellipse(x, y, r), &brush);
-                }
-                brush.SetColor(&rgb(if self.hover == Some(b) { 0xFFFFFF } else { theme::ICON }));
-                self.icon(&dc, &brush, glyph, x, y, true);
             }
             // Sidebar: terminal (active), files, glow color.
             for (b, glyph) in [(Button::Terminal, '\u{E756}'), (Button::Folder, '\u{E8B7}'), (Button::Glow, '\u{E790}')] {
