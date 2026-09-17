@@ -132,6 +132,7 @@ pub fn run() {
             None,
         )
         .expect("create window");
+        round_corners(hwnd);
 
         let d2d: ID2D1Factory = D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, None).expect("d2d");
         let dwrite: IDWriteFactory = DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED).expect("dwrite");
@@ -706,6 +707,20 @@ impl App {
                 DWRITE_MEASURING_MODE_NATURAL,
             );
         }
+    }
+}
+
+/// Ask Windows 11 for rounded window corners, like the Mac. Older Windows ignores this.
+fn round_corners(hwnd: HWND) {
+    use windows::Win32::Graphics::Dwm::{DwmSetWindowAttribute, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND};
+    unsafe {
+        let pref = DWMWCP_ROUND;
+        let _ = DwmSetWindowAttribute(
+            hwnd,
+            DWMWA_WINDOW_CORNER_PREFERENCE,
+            &pref as *const _ as *const std::ffi::c_void,
+            std::mem::size_of_val(&pref) as u32,
+        );
     }
 }
 
