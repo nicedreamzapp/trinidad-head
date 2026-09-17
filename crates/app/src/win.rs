@@ -811,8 +811,9 @@ impl App {
             dc.SetTarget(&list);
             dc.BeginDraw();
             if !l.maximized {
+                rim.SetOpacity(0.5);
                 dc.DrawGeometry(&shape, &rim, 10.0 * s, None);
-                rim.SetOpacity(0.55);
+                rim.SetOpacity(0.3);
                 dc.FillEllipse(
                     &ellipse_xy(l.body.cx(), l.body.b + 14.0 * s, l.body.w() * 0.34, 7.0 * s),
                     &rim,
@@ -911,7 +912,7 @@ impl App {
             if let Some(c) = &chrome {
                 if !l.maximized {
                     if let Ok(img) = c.bloom.GetOutput() {
-                        let passes = if self.focused { 3 } else { 1 };
+                        let passes = 1;
                         for _ in 0..passes {
                             dc.DrawImage(&img, None, None, D2D1_INTERPOLATION_MODE_LINEAR, D2D1_COMPOSITE_MODE_SOURCE_OVER);
                         }
@@ -936,17 +937,18 @@ impl App {
 
                 // 3. The glass tube: a wide soft band, a brighter band, then a hot core line.
                 let strength = if self.focused { 1.0 } else { 0.5 };
-                c.rim.SetOpacity(0.16 * strength);
+                // Kept faint: Matt found the glow too strong (2026-09-17).
+                c.rim.SetOpacity(0.06 * strength);
                 let _ = dc.DrawGeometry(&c.shape, &c.rim, 22.0 * s, None);
-                c.rim.SetOpacity(0.5 * strength);
+                c.rim.SetOpacity(0.2 * strength);
                 let _ = dc.DrawGeometry(&c.shape, &c.rim, 7.0 * s, None);
-                c.rim.SetOpacity(1.0 * strength);
+                c.rim.SetOpacity(0.5 * strength);
                 let _ = dc.DrawGeometry(&c.shape, &c.rim, 2.0 * s, None);
                 c.rim.SetOpacity(1.0);
 
                 // 4. Specular highlight: white light along the upper inside edge.
                 let spec = [
-                    D2D1_GRADIENT_STOP { position: 0.0, color: D2D1_COLOR_F { a: 0.85, ..rgb(0xFFFFFF) } },
+                    D2D1_GRADIENT_STOP { position: 0.0, color: D2D1_COLOR_F { a: 0.4, ..rgb(0xFFFFFF) } },
                     D2D1_GRADIENT_STOP { position: 1.0, color: D2D1_COLOR_F { a: 0.0, ..rgb(0xFFFFFF) } },
                 ];
                 if let Some(w) = self.linear_brush(&spec, (b.l, b.t), (b.l + b.w() * 0.25, b.t + b.h() * 0.45)) {
