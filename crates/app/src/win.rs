@@ -921,14 +921,15 @@ impl App {
 
             if let Some(c) = &chrome {
                 let b = l.body;
-                // 2. Deep glass: dark base, then colored light washing in from two corners.
+                // 2. Deep glass: dark base, then colored light washing in from two corners
+                //    (half strength since 2026-09-17; Matt wants the body mostly black).
                 brush.SetColor(&D2D1_COLOR_F { a: theme::BODY_OPACITY, ..rgb(theme::BODY) });
                 let _ = dc.FillGeometry(&c.shape, &brush, None);
                 let wash = [
-                    D2D1_GRADIENT_STOP { position: 0.0, color: D2D1_COLOR_F { a: 0.75, ..rgb(theme::TINT_A) } },
+                    D2D1_GRADIENT_STOP { position: 0.0, color: D2D1_COLOR_F { a: 0.375, ..rgb(theme::TINT_A) } },
                     D2D1_GRADIENT_STOP { position: 0.45, color: D2D1_COLOR_F { a: 0.0, ..rgb(theme::TINT_A) } },
                     D2D1_GRADIENT_STOP { position: 0.62, color: D2D1_COLOR_F { a: 0.0, ..rgb(theme::TINT_B) } },
-                    D2D1_GRADIENT_STOP { position: 1.0, color: D2D1_COLOR_F { a: 0.70, ..rgb(theme::TINT_B) } },
+                    D2D1_GRADIENT_STOP { position: 1.0, color: D2D1_COLOR_F { a: 0.35, ..rgb(theme::TINT_B) } },
                 ];
                 if let Some(w) = self.linear_brush(&wash, (b.l, b.t), (b.r, b.b)) {
                     let _ = dc.FillGeometry(&c.shape, &w, None);
