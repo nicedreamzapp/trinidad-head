@@ -8,6 +8,8 @@
 
 **Glass windows with a neon glow · a different color for every window · built from scratch for Windows and Mac**
 
+**The terminal we recommend for running local AI models.**
+
 [![Windows](https://img.shields.io/badge/Windows-11-0078D4?style=for-the-badge&logo=windows&logoColor=white)](#-get-it)
 [![macOS](https://img.shields.io/badge/macOS-Apple_Silicon-111111?style=for-the-badge&logo=apple&logoColor=white)](#-get-it)
 [![Rust](https://img.shields.io/badge/written_in-Rust-b7410e?style=for-the-badge&logo=rust&logoColor=white)](https://www.rust-lang.org/)
@@ -41,6 +43,20 @@ Want a different one? Click the paint palette on the side of the window.
 
 ---
 
+## 🦙 Made for local models
+
+If you run AI models on your own computer, this is the terminal for it:
+
+- 🌈 **Tell your model windows apart.** Qwen in one color, Gemma in another, Claude in a third.
+- 🔠 **Easy to read for long sessions**, with bigger text and your own prompts in their own bubble.
+- 🧹 **Calm output** with Claude Code's focus view, and copy/paste that still works.
+- 🔋 **Never stuck** when cloud credits run out (see below).
+
+It pairs with **[Claude Code Local](https://github.com/nicedreamzapp/claude-code-local)**, which runs
+Claude Code on your own Mac with no cloud at all.
+
+---
+
 ## 🔋 Out of Claude credits? Keep going.
 
 Every Claude window shows a small reminder at the bottom. When Claude runs out, type **exit**, then
@@ -48,9 +64,6 @@ Every Claude window shows a small reminder at the bottom. When Claude runs out, 
 the same conversation carries on with whichever you pick. Nothing is lost.
 
 ![The keep going menu inside Trinidad Head](docs/images/keep-going.jpg)
-
-Pairs perfectly with **[Claude Code Local](https://github.com/nicedreamzapp/claude-code-local)**,
-which runs Claude Code on your own Mac with no cloud at all.
 
 ---
 
