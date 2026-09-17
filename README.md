@@ -41,6 +41,19 @@ Want a different one? Click the paint palette on the side of the window.
 
 ---
 
+## 🔋 Out of Claude credits? Keep going.
+
+Every Claude window shows a small reminder at the bottom. When Claude runs out, type **exit**, then
+**keep going**. You get a list of free cloud models and models that run right on your computer, and
+the same conversation carries on with whichever you pick. Nothing is lost.
+
+![The keep going menu inside Trinidad Head](docs/images/keep-going.jpg)
+
+Pairs perfectly with **[Claude Code Local](https://github.com/nicedreamzapp/claude-code-local)**,
+which runs Claude Code on your own Mac with no cloud at all.
+
+---
+
 ## ✨ What you get
 
 - 🪟 **A window that feels designed.** Dark glass, softly rounded corners, a glowing rim, and the
