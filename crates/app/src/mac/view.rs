@@ -12,7 +12,7 @@ use objc2::{define_class, msg_send, sel, AllocAnyThread, DefinedClass, MainThrea
 use objc2_app_kit::{
     NSColor, NSCompositingOperation, NSCursor, NSCursorFrameResizeDirections,
     NSCursorFrameResizePosition, NSEvent, NSEventModifierFlags, NSFont, NSFontAttributeName,
-    NSForegroundColorAttributeName, NSGraphicsContext, NSImage, NSImageSymbolConfiguration, NSPasteboard,
+    NSForegroundColorAttributeName, NSGraphicsContext, NSImage, NSImageSymbolConfiguration, NSMenu, NSMenuItem, NSPasteboard,
     NSPasteboardTypeString, NSResponder, NSStringDrawing, NSTextInputClient, NSTrackingArea, NSTrackingAreaOptions,
     NSView, NSWorkspace,
 };
@@ -162,9 +162,24 @@ define_class!(
             NSCursor::arrowCursor().set();
         }
 
-        #[unsafe(method(rightMouseUp:))]
-        fn right_mouse_up(&self, _event: &NSEvent) {
+        #[unsafe(method(rightMouseDown:))]
+        fn right_mouse_down(&self, event: &NSEvent) {
+            self.context_menu(event);
+        }
+
+        #[unsafe(method(copy:))]
+        fn copy_action(&self, _sender: Option<&AnyObject>) {
+            self.copy_and_clear();
+        }
+
+        #[unsafe(method(paste:))]
+        fn paste_action(&self, _sender: Option<&AnyObject>) {
             self.paste();
+        }
+
+        #[unsafe(method(selectAll:))]
+        fn select_all_action(&self, _sender: Option<&AnyObject>) {
+            self.select_all();
         }
 
         #[unsafe(method(scrollWheel:))]
@@ -504,11 +519,7 @@ impl TermView {
         }
         let key = event.charactersIgnoringModifiers().map(|s| s.to_string().to_lowercase()).unwrap_or_default();
         match key.as_str() {
-            "c" => {
-                self.copy_selection();
-                self.ivars().borrow_mut().sel = None;
-                self.setNeedsDisplay(true);
-            }
+            "c" => self.copy_and_clear(),
             "v" => self.paste(),
             "w" => {
                 if let Some(w) = self.window() {
@@ -520,18 +531,48 @@ impl TermView {
                     w.miniaturize(None);
                 }
             }
-            "a" => {
-                let total = {
-                    let st = self.ivars().borrow();
-                    let s = st.shared.lock().unwrap();
-                    (s.term.total_lines(), s.term.cols())
-                };
-                self.ivars().borrow_mut().sel = Some(((0, 0), (total.0.saturating_sub(1), total.1.saturating_sub(1))));
-                self.setNeedsDisplay(true);
-            }
+            "a" => self.select_all(),
             _ => return false,
         }
         true
+    }
+
+    fn copy_and_clear(&self) {
+        self.copy_selection();
+        self.ivars().borrow_mut().sel = None;
+        self.setNeedsDisplay(true);
+    }
+
+    fn select_all(&self) {
+        let total = {
+            let st = self.ivars().borrow();
+            let s = st.shared.lock().unwrap();
+            (s.term.total_lines(), s.term.cols())
+        };
+        self.ivars().borrow_mut().sel = Some(((0, 0), (total.0.saturating_sub(1), total.1.saturating_sub(1))));
+        self.setNeedsDisplay(true);
+    }
+
+    /// Right-click menu: Copy, Paste, Select All. Nothing is copied or pasted until one is picked.
+    fn context_menu(&self, event: &NSEvent) {
+        let mtm = self.mtm();
+        let has_sel = matches!(self.ivars().borrow().sel, Some((a, b)) if a != b);
+        let has_clip = NSPasteboard::generalPasteboard().stringForType(unsafe { NSPasteboardTypeString }).is_some();
+        let menu = NSMenu::new(mtm);
+        menu.setAutoenablesItems(false);
+        for (title, action, enabled) in [
+            (ns_string!("Copy"), sel!(copy:), has_sel),
+            (ns_string!("Paste"), sel!(paste:), has_clip),
+            (ns_string!("Select All"), sel!(selectAll:), true),
+        ] {
+            let item = unsafe {
+                NSMenuItem::initWithTitle_action_keyEquivalent(mtm.alloc(), title, Some(action), ns_string!(""))
+            };
+            unsafe { item.setTarget(Some(self)) };
+            item.setEnabled(enabled);
+            menu.addItem(&item);
+        }
+        NSMenu::popUpContextMenu_withEvent_forView(&menu, event, self);
     }
 
     fn paste(&self) {
@@ -758,10 +799,9 @@ impl TermView {
         let selecting = std::mem::take(&mut self.ivars().borrow_mut().selecting);
         if selecting {
             let sel = self.ivars().borrow().sel;
-            match sel {
-                // Releasing the mouse copies the selection, like the Windows build.
-                Some((a, b)) if a != b => self.copy_selection(),
-                _ => self.ivars().borrow_mut().sel = None,
+            // The selection stays on screen; copying waits for Cmd+C or the right-click menu.
+            if !matches!(sel, Some((a, b)) if a != b) {
+                self.ivars().borrow_mut().sel = None;
             }
             self.setNeedsDisplay(true);
             return;

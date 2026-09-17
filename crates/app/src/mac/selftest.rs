@@ -533,7 +533,7 @@ fn full_steps() -> Vec<Step> {
     }));
     s.push(act(0.3, |c| {
         let got = c.pasteboard();
-        c.check("dragging selects text and copies it", got == "SELECT-ME-12345", format!("clipboard {got:?}"));
+        c.check("dragging selects text without copying it", got == "before", format!("clipboard {got:?}"));
         c.check("a plain drag sends nothing to the program", c.captured().is_empty(), show(&c.captured()));
         c.drag_cells((4, 0), (4, 14), NSEventModifierFlags::empty());
         c.set_pasteboard("zzz");
@@ -546,6 +546,7 @@ fn full_steps() -> Vec<Step> {
         c.set_pasteboard("before");
         c.mark();
         c.drag_cells((6, 0), (6, 13), NSEventModifierFlags::Shift);
+        c.key("c", "c", NSEventModifierFlags::Command, 8);
     }));
     s.push(act(0.3, |c| {
         let got = c.pasteboard();
@@ -578,13 +579,12 @@ fn full_steps() -> Vec<Step> {
         );
         c.set_pasteboard("RIGHT-CLICK");
         c.mark();
-        let (x, y) = c.cell_point(3, 3);
-        c.mouse(NSEventType::RightMouseDown, x, y, NSEventModifierFlags::empty());
-        c.mouse(NSEventType::RightMouseUp, x, y, NSEventModifierFlags::empty());
+        // The right-click menu itself is modal, so pick its Paste item's action directly.
+        let _: () = unsafe { msg_send![&*c.view, paste: None::<&AnyObject>] };
     }));
     s.push(act(0.3, |c| {
         let got = c.captured();
-        c.check("right-click pastes (even when the program wants the mouse)", got == b"RIGHT-CLICK", show(&got));
+        c.check("the right-click menu's Paste pastes (even when the program wants the mouse)", got == b"RIGHT-CLICK", show(&got));
         c.feed(b"\x1b[?1002l\x1b[?1006l\x1b[?2004h");
         c.set_pasteboard("PASTE-ONE\nline2");
         c.mark();
