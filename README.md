@@ -4,23 +4,32 @@ Trinidad Head is a headland on the Northern California coast, tied to the mainla
 sand. This terminal is meant to join things the same way: Windows and Linux in one window, and
 people and AI agents working on the same live sessions.
 
-Trinidad Head is written from scratch in Rust. Windows comes first, and a Mac version will follow. It has
-no Electron and no borrowed terminal engine. It's early: the first window runs today, and most of
-the plan below is still ahead.
+Trinidad Head is written from scratch in Rust and runs on **Windows and macOS** from one codebase.
+It has no Electron and no borrowed terminal engine. It's young but in daily use.
 
-## What works now (v0.1)
+![A Trinidad Head window: dark glass with a neon rim](docs/images/window.jpg)
+
+![Three windows open at once, each with its own glow color](docs/images/colors.jpg)
+
+## What works now
 
 - **Its own terminal engine** (`core-vt`) turns shell output into a screen of cells: cursor
   movement, erase, scroll regions, 16/256/true color, wide characters, the alternate screen,
   window titles, and OSC 133 shell-integration marks. It has no UI and no OS code, so a web or
   phone viewer can reuse it.
-- **Windows ConPTY host** (`pty`) runs PowerShell 7 if it's installed, otherwise Windows
-  PowerShell, or any command you pass.
-- **A native window** (`trinidad-head`) draws with Direct2D and DirectWrite and is styled like a
-  macOS terminal:
-  - dark glass: #191d27 at 95% over an acrylic blur
-  - 16 px rounded corners
-  - red/yellow/green window buttons and a centered title
+- **Shell host** (`pty`): ConPTY on Windows (PowerShell 7 if installed, otherwise Windows
+  PowerShell) and a Unix pty on macOS (your login shell), or any command you pass.
+- **Its own window chrome on both systems:** a borderless, see-through window drawn pixel by
+  pixel. Windows uses Direct2D, DirectWrite and DirectComposition; the Mac uses AppKit,
+  CoreGraphics and CoreText.
+  - rounded glass body with a rippled edge and a neon rim that glows
+  - red/yellow/green window buttons, a small sidebar, and a "///" resize corner
+- **A different color for every window.** Eight glow themes; each new window picks one no other
+  open window is using.
+- **Your own prompts stand out.** Claude Code's "your message" bar is drawn as a soft pill,
+  with bigger green text, so it's easy to find your questions when you scroll back.
+- **Works with full-screen terminal apps.** Mouse reporting (SGR), OSC 52 copy, bracketed paste
+  and focus events. Shift+drag always selects, and right-click always pastes.
 - **A built-in typing-delay meter.** The title bar shows the median and p95 time from key press
   to finished frame. It doesn't include the monitor's own delay.
 - Scrollback with the mouse wheel and Shift+PgUp/PgDn, right-click or Ctrl+Shift+V paste with
@@ -46,6 +55,13 @@ See [docs/PLAN.md](docs/PLAN.md). In short:
 [docs/RESEARCH.md](docs/RESEARCH.md) collects the pain points of existing terminals that shaped
 these choices.
 
+## Build (macOS)
+
+```
+scripts/build-mac-app.sh                       # builds ~/Applications/Trinidad Head.app
+open -n -a "Trinidad Head" --args htop         # each launch is its own window
+```
+
 ## Build (Windows)
 
 Trinidad Head builds without Visual Studio, using the LLVM-based MinGW toolchain:
@@ -64,8 +80,9 @@ The engine's tests run on any OS: `cargo test -p core-vt`.
 
 ```
 crates/core-vt   terminal parser + screen state (portable)
-crates/pty       pseudo-console host (Windows ConPTY today)
-crates/app       the window (binary: trinidad-head)
+crates/pty       shell host (ConPTY on Windows, Unix pty on macOS)
+crates/app       the window (binary: trinidad-head); src/mac for macOS
+mac-tools/       helpers for launching and typing into windows on macOS
 docs/            plan and research
 ```
 
