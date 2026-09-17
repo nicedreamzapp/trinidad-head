@@ -1053,6 +1053,46 @@ impl App {
             let (left, top) = (l.text.l, l.text.t);
             let mut text: Vec<u16> = Vec::with_capacity(term.cols() * 2);
             let sel = self.sel.map(|(a, b)| if a <= b { (a, b) } else { (b, a) });
+            // Claude's prompt bar: drawn as one rounded pill per block of rows instead of
+            // square cell backgrounds (Matt, 2026-09-17).
+            let (ur, ug, ub) = self.user_bar;
+            let bar_color = Color::Rgb(ur, ug, ub);
+            let bar_span = |row: usize| -> Option<(usize, usize)> {
+                let line = term.line(row, offset);
+                let first = line.iter().position(|c| c.attrs.bg == bar_color)?;
+                let last = line.iter().rposition(|c| c.attrs.bg == bar_color)?;
+                Some((first, last + 1))
+            };
+            let mut row = 0;
+            while row < term.rows() {
+                let Some(mut span) = bar_span(row) else {
+                    row += 1;
+                    continue;
+                };
+                let start_row = row;
+                row += 1;
+                while row < term.rows() {
+                    match bar_span(row) {
+                        Some(s) => {
+                            span = (span.0.min(s.0), span.1.max(s.1));
+                            row += 1;
+                        }
+                        None => break,
+                    }
+                }
+                let t = top + start_row as f32 * ch;
+                let b = top + row as f32 * ch;
+                let r = ((b - t) / 2.0).min(16.0 * s);
+                brush.SetColor(&rgb((ur as u32) << 16 | (ug as u32) << 8 | ub as u32));
+                dc.FillRoundedRectangle(
+                    &D2D1_ROUNDED_RECT {
+                        rect: D2D_RECT_F { left: left + span.0 as f32 * cw - 4.0 * s, top: t + 1.0, right: left + span.1 as f32 * cw + 4.0 * s, bottom: b - 1.0 },
+                        radiusX: r,
+                        radiusY: r,
+                    },
+                    &brush,
+                );
+            }
             for row in 0..term.rows() {
                 let line = term.line(row, offset);
                 let y = top + row as f32 * ch;
@@ -1099,7 +1139,7 @@ impl App {
                     }
                     let x0 = left + start as f32 * cw;
                     let x1 = left + col as f32 * cw;
-                    if let Some(bg) = bg {
+                    if let Some(bg) = bg.filter(|_| !user_bar) {
                         brush.SetColor(&bg);
                         dc.FillRectangle(&D2D_RECT_F { left: x0, top: y, right: x1, bottom: y + ch }, &brush);
                     }
