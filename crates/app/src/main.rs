@@ -8,6 +8,12 @@
 #[cfg_attr(not(windows), allow(dead_code))]
 mod latency;
 #[cfg(windows)]
+mod gfx;
+#[cfg_attr(not(windows), allow(dead_code))]
+mod layout;
+#[cfg_attr(not(windows), allow(dead_code))]
+mod theme;
+#[cfg(windows)]
 mod win;
 
 #[cfg(windows)]

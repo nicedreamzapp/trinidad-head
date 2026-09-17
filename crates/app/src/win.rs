@@ -6,63 +6,62 @@ use std::time::{Duration, Instant};
 
 use core_vt::{Attrs, Cell, Color, Terminal};
 use pty::Pty;
-use windows::core::{w, Interface, PCWSTR};
+use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{HGLOBAL, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
-use windows_numerics::Vector2;
 use windows::Win32::Graphics::Direct2D::Common::{
-    D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_COLOR_F, D2D1_PIXEL_FORMAT, D2D_RECT_F, D2D_SIZE_U,
+    D2D1_COLOR_F, D2D1_COMPOSITE_MODE_SOURCE_OVER, D2D1_GRADIENT_STOP, D2D_RECT_F, D2D1_BORDER_MODE_SOFT,
 };
 use windows::Win32::Graphics::Direct2D::{
-    D2D1CreateFactory, ID2D1Factory, D2D1_ELLIPSE, D2D1_ROUNDED_RECT, ID2D1HwndRenderTarget, ID2D1SolidColorBrush,
-    D2D1_DRAW_TEXT_OPTIONS_CLIP, D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT, D2D1_FACTORY_TYPE_SINGLE_THREADED,
-    D2D1_HWND_RENDER_TARGET_PROPERTIES, D2D1_PRESENT_OPTIONS_IMMEDIATELY, D2D1_RENDER_TARGET_PROPERTIES,
-    D2D1_RENDER_TARGET_TYPE_DEFAULT, D2D1_RENDER_TARGET_USAGE_NONE, D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE,
-    D2D1_FEATURE_LEVEL_DEFAULT,
+    CLSID_D2D1GaussianBlur, ID2D1Effect, ID2D1SolidColorBrush, D2D1_BUFFER_PRECISION_8BPC_UNORM,
+    D2D1_COLOR_INTERPOLATION_MODE_STRAIGHT, D2D1_COLOR_SPACE_SRGB, D2D1_DRAW_TEXT_OPTIONS_CLIP,
+    D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT, D2D1_ELLIPSE, D2D1_EXTEND_MODE_CLAMP,
+    D2D1_GAUSSIANBLUR_PROP_BORDER_MODE, D2D1_GAUSSIANBLUR_PROP_STANDARD_DEVIATION, D2D1_INTERPOLATION_MODE_LINEAR,
+    D2D1_LINEAR_GRADIENT_BRUSH_PROPERTIES, D2D1_PROPERTY_TYPE_ENUM, D2D1_PROPERTY_TYPE_FLOAT, D2D1_ROUNDED_RECT,
 };
 use windows::Win32::Graphics::DirectWrite::{
     DWriteCreateFactory, IDWriteFactory, IDWriteFontCollection, IDWriteTextFormat, DWRITE_FACTORY_TYPE_SHARED,
     DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE_ITALIC, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_WEIGHT_BOLD,
-    DWRITE_FONT_WEIGHT_NORMAL, DWRITE_MEASURING_MODE_NATURAL, DWRITE_TEXT_METRICS, DWRITE_WORD_WRAPPING_NO_WRAP,
+    DWRITE_FONT_WEIGHT_NORMAL, DWRITE_MEASURING_MODE_NATURAL, DWRITE_PARAGRAPH_ALIGNMENT_CENTER,
+    DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_TEXT_METRICS, DWRITE_WORD_WRAPPING_NO_WRAP,
 };
-use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM;
-use windows::Win32::Graphics::Gdi::{BeginPaint, EndPaint, PAINTSTRUCT};
+use windows::Win32::Graphics::Dwm::{
+    DwmSetWindowAttribute, DWMWA_BORDER_COLOR, DWMWA_COLOR_NONE, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_DONOTROUND,
+};
+use windows::Win32::Graphics::Gdi::{BeginPaint, EndPaint, ScreenToClient, PAINTSTRUCT};
 use windows::Win32::System::DataExchange::{CloseClipboard, GetClipboardData, OpenClipboard};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Memory::{GlobalLock, GlobalUnlock};
-use windows::Win32::UI::HiDpi::{GetDpiForWindow, GetSystemMetricsForDpi, SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2};
+use windows::Win32::UI::Controls::WM_MOUSELEAVE;
+use windows::Win32::UI::HiDpi::{
+    GetDpiForWindow, GetSystemMetricsForDpi, SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
+};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    GetKeyState, VIRTUAL_KEY, VK_CONTROL, VK_DELETE, VK_DOWN, VK_END, VK_F1, VK_F10, VK_F11, VK_F12, VK_F2, VK_F3,
-    VK_F4, VK_F5, VK_F6, VK_F7, VK_F8, VK_F9, VK_HOME, VK_INSERT, VK_LEFT, VK_MENU, VK_NEXT, VK_PRIOR, VK_RIGHT,
-    VK_SHIFT, VK_SPACE, VK_UP, ReleaseCapture, SetCapture, TrackMouseEvent, TME_LEAVE, TRACKMOUSEEVENT,
+    GetKeyState, ReleaseCapture, SetCapture, TrackMouseEvent, TME_LEAVE, TRACKMOUSEEVENT, VIRTUAL_KEY, VK_CONTROL,
+    VK_DELETE, VK_DOWN, VK_END, VK_F1, VK_F10, VK_F11, VK_F12, VK_F2, VK_F3, VK_F4, VK_F5, VK_F6, VK_F7, VK_F8, VK_F9,
+    VK_HOME, VK_INSERT, VK_LEFT, VK_MENU, VK_NEXT, VK_PRIOR, VK_RIGHT, VK_SHIFT, VK_SPACE, VK_UP,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetClientRect, GetMessageW, LoadCursorW,
-    PostMessageW, PostQuitMessage, RegisterClassW, SetWindowTextW, TranslateMessage, CS_HREDRAW, CS_VREDRAW,
-    CW_USEDEFAULT, IDC_IBEAM, MSG, WHEEL_DELTA, WINDOW_EX_STYLE, WM_APP, WM_CHAR, WM_DESTROY, WM_DPICHANGED,
-    WM_KEYDOWN, WM_KILLFOCUS, WM_MOUSEWHEEL, WM_PAINT, WM_RBUTTONUP, WM_SETFOCUS, WM_SIZE, WM_SYSCHAR,
-    WM_SYSKEYDOWN, WNDCLASSW, WS_OVERLAPPEDWINDOW, WS_VISIBLE, IsZoomed, NCCALCSIZE_PARAMS, SetWindowPos,
-    ShowWindow, SM_CXFRAME, SM_CXPADDEDBORDER, SWP_FRAMECHANGED, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
-    SW_MAXIMIZE, SW_MINIMIZE, SW_RESTORE, WM_CLOSE, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_NCACTIVATE,
-    WM_NCCALCSIZE, WM_NCHITTEST, GetWindowRect,
+    CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetClientRect, GetMessageW, IsZoomed,
+    LoadCursorW, PostMessageW, PostQuitMessage, RegisterClassW, SetWindowPos, SetWindowTextW, ShowWindow,
+    TranslateMessage, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, IDC_ARROW, MSG, NCCALCSIZE_PARAMS, SM_CXFRAME,
+    SM_CXPADDEDBORDER, SWP_FRAMECHANGED, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SW_MAXIMIZE, SW_MINIMIZE, SW_RESTORE,
+    WHEEL_DELTA, WM_APP, WM_CHAR, WM_CLOSE, WM_DESTROY, WM_DPICHANGED, WM_KEYDOWN, WM_KILLFOCUS, WM_LBUTTONDOWN,
+    WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCACTIVATE, WM_NCCALCSIZE, WM_NCHITTEST, WM_PAINT, WM_RBUTTONUP,
+    WM_SETFOCUS, WM_SIZE, WM_SYSCHAR, WM_SYSKEYDOWN, WNDCLASSW, WS_EX_NOREDIRECTIONBITMAP, WS_OVERLAPPEDWINDOW,
 };
-use windows::Win32::UI::Controls::WM_MOUSELEAVE;
-use windows::Win32::Graphics::Gdi::{CreateRoundRectRgn, ScreenToClient, SetWindowRgn};
+use windows_numerics::Vector2;
+
+use crate::gfx::Gfx;
+use windows::core::Interface;
+use windows::Win32::Graphics::Direct2D::Common::{D2D1_FIGURE_BEGIN_FILLED, D2D1_FIGURE_END_CLOSED};
+use windows::Win32::Graphics::Direct2D::{ID2D1Factory1, ID2D1Geometry, ID2D1LinearGradientBrush, ID2D1PathGeometry1};
+use crate::layout::{Button, Hit, Layout};
+use crate::theme::{self, GLOWS};
 
 const WM_TERM_OUTPUT: u32 = WM_APP + 1;
 const WM_TERM_EXITED: u32 = WM_APP + 2;
 const CF_UNICODETEXT: u32 = 13;
-// Look: matches Matt's Mac Ghostty ("Clear Dark": #191d27 at 95% over a blur, #e0e0e0 text).
-const BG: u32 = 0x191D27;
-const FG: u32 = 0xE0E0E0;
-const BG_OPACITY: f32 = 0.95;
 const FONT_DIP: f32 = 13.0;
-const PAD_DIP: f32 = 10.0;
-const TITLE_DIP: f32 = 28.0;
-/// Mac-style window buttons: close, minimize, zoom (centers in DIPs from the left edge).
-const LIGHTS: [(f32, u32); 3] = [(20.0, 0xFF5F57), (40.0, 0xFEBC2E), (60.0, 0x28C840)];
-const LIGHT_R: f32 = 6.0;
-/// Corner radius. Windows 11 only rounds to 8 px on its own, so we cut the shape ourselves.
-const CORNER_DIP: f32 = 16.0;
 const APP_NAME: &str = "Trinidad Head";
 
 /// State shared between the window thread and the shell-reader thread.
@@ -71,24 +70,38 @@ struct Shared {
     last_output: Option<Instant>,
 }
 
+/// The window's shape, rim brush and blurred bloom for one size and color theme.
+#[derive(Clone)]
+struct ChromeCache {
+    key: (u32, u32, usize, bool),
+    bloom: ID2D1Effect,
+    shape: ID2D1Geometry,
+    inner: ID2D1Geometry,
+    rim: ID2D1LinearGradientBrush,
+}
+
 struct App {
     hwnd: HWND,
     shared: Arc<Mutex<Shared>>,
     pty: Arc<Mutex<Pty>>,
-    d2d: ID2D1Factory,
-    dwrite: IDWriteFactory,
-    target: Option<ID2D1HwndRenderTarget>,
+    gfx: Option<Gfx>,
     brush: Option<ID2D1SolidColorBrush>,
+    glow_cache: Option<ChromeCache>,
+    dwrite: IDWriteFactory,
     formats: Vec<IDWriteTextFormat>, // regular, bold, italic, bold-italic
+    icon_format: Option<IDWriteTextFormat>,
+    icon_small: Option<IDWriteTextFormat>,
     font_family: Vec<u16>,
+    icon_family: Vec<u16>,
     cell_w: f32,
     cell_h: f32,
-    baseline_fix: f32,
+    layout: Layout,
+    glow: usize,
+    settings_path: Option<std::path::PathBuf>,
     scroll_offset: usize,
     focused: bool,
-    title_format: Option<IDWriteTextFormat>,
-    lights_hover: bool,
-    lights_pressed: Option<usize>,
+    hover: Option<Button>,
+    pressed: Option<Button>,
     tracking_mouse: bool,
     high_surrogate: Option<u16>,
     meter: crate::latency::Meter,
@@ -112,15 +125,19 @@ pub fn run() {
     }
     let args: Vec<String> = std::env::args().skip(1).collect();
     let command = if args.is_empty() { pty::default_shell() } else { args.join(" ") };
-    let data_dir = std::env::var("LOCALAPPDATA")
-        .map(|d| std::path::PathBuf::from(d).join("TrinidadHead"))
-        .ok();
+    let data_dir = std::env::var("LOCALAPPDATA").map(|d| std::path::PathBuf::from(d).join("TrinidadHead")).ok();
     if let Some(d) = &data_dir {
         let _ = std::fs::create_dir_all(d);
     }
-    let log = data_dir.as_ref().and_then(|d| {
-        std::fs::OpenOptions::new().create(true).append(true).open(d.join("latency.log")).ok()
-    });
+    let log = data_dir
+        .as_ref()
+        .and_then(|d| std::fs::OpenOptions::new().create(true).append(true).open(d.join("latency.log")).ok());
+    let settings_path = data_dir.as_ref().map(|d| d.join("settings.txt"));
+    let glow = settings_path
+        .as_ref()
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .map(|t| theme::parse_settings(&t))
+        .unwrap_or(0);
     // Test hook: TRINIDAD_HEAD_DUMP=path writes the visible screen there a few times a second.
     let dump_path = std::env::var_os("TRINIDAD_HEAD_DUMP").map(std::path::PathBuf::from);
 
@@ -131,65 +148,86 @@ pub fn run() {
             style: CS_HREDRAW | CS_VREDRAW,
             lpfnWndProc: Some(wndproc),
             hInstance: instance.into(),
-            hCursor: LoadCursorW(None, IDC_IBEAM).unwrap_or_default(),
+            hCursor: LoadCursorW(None, IDC_ARROW).unwrap_or_default(),
             lpszClassName: class,
             ..Default::default()
         };
         RegisterClassW(&wc);
         let title = wide(APP_NAME);
+        // No redirection bitmap: DirectComposition supplies every pixel, transparent ones included.
         let hwnd = CreateWindowExW(
-            WINDOW_EX_STYLE::default(),
+            WS_EX_NOREDIRECTIONBITMAP,
             class,
             PCWSTR(title.as_ptr()),
-            WS_OVERLAPPEDWINDOW | WS_VISIBLE,
+            WS_OVERLAPPEDWINDOW,
             CW_USEDEFAULT,
             CW_USEDEFAULT,
-            1000,
-            640,
+            1080,
+            700,
             None,
             None,
             Some(instance.into()),
             None,
         )
         .expect("create window");
-        apply_chrome(hwnd);
-        update_shape(hwnd);
+        // Our shape is drawn, not clipped: Windows must not round or outline it.
+        let pref = DWMWCP_DONOTROUND;
+        let _ = DwmSetWindowAttribute(
+            hwnd,
+            DWMWA_WINDOW_CORNER_PREFERENCE,
+            &pref as *const _ as *const std::ffi::c_void,
+            std::mem::size_of_val(&pref) as u32,
+        );
+        // Windows 11 outlines every window with a thin line; ours has its own rim.
+        let none = DWMWA_COLOR_NONE;
+        let _ = DwmSetWindowAttribute(
+            hwnd,
+            DWMWA_BORDER_COLOR,
+            &none as *const _ as *const std::ffi::c_void,
+            std::mem::size_of_val(&none) as u32,
+        );
+        let _ = SetWindowPos(hwnd, None, 0, 0, 0, 0, SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER);
 
-        let d2d: ID2D1Factory = D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, None).expect("d2d");
         let dwrite: IDWriteFactory = DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED).expect("dwrite");
-        let font_family = pick_font(&dwrite);
+        let font_family = pick_font(&dwrite, &["Cascadia Mono", "Cascadia Code", "Consolas", "Courier New"]);
+        let icon_family = pick_font(&dwrite, &["Segoe Fluent Icons", "Segoe MDL2 Assets"]);
+
+        let pty = match Pty::spawn(&command, None, 80, 24) {
+            Ok(p) => p,
+            Err(e) => {
+                let msg = wide(&format!("Could not start the shell:\n{command}\n\n{e}"));
+                windows::Win32::UI::WindowsAndMessaging::MessageBoxW(
+                    Some(hwnd),
+                    PCWSTR(msg.as_ptr()),
+                    w!("Trinidad Head"),
+                    Default::default(),
+                );
+                return;
+            }
+        };
 
         let mut app = App {
             hwnd,
             shared: Arc::new(Mutex::new(Shared { term: Terminal::new(80, 24), last_output: None })),
-            // Placeholder until the real size is known; replaced just below.
-            pty: Arc::new(Mutex::new(match Pty::spawn(&command, None, 80, 24) {
-                Ok(p) => p,
-                Err(e) => {
-                    let msg = wide(&format!("Could not start the shell:\n{command}\n\n{e}"));
-                    windows::Win32::UI::WindowsAndMessaging::MessageBoxW(
-                        Some(hwnd),
-                        PCWSTR(msg.as_ptr()),
-                        w!("Trinidad Head"),
-                        Default::default(),
-                    );
-                    return;
-                }
-            })),
-            d2d,
-            dwrite,
-            target: None,
+            pty: Arc::new(Mutex::new(pty)),
+            gfx: None,
             brush: None,
+            glow_cache: None,
+            dwrite,
             formats: Vec::new(),
+            icon_format: None,
+            icon_small: None,
             font_family,
+            icon_family,
             cell_w: 8.0,
             cell_h: 16.0,
-            baseline_fix: 0.0,
+            layout: Layout::new(1080.0, 700.0, 1.0, false),
+            glow,
+            settings_path,
             scroll_offset: 0,
             focused: true,
-            title_format: None,
-            lights_hover: false,
-            lights_pressed: None,
+            hover: None,
+            pressed: None,
             tracking_mouse: false,
             high_surrogate: None,
             meter: crate::latency::Meter::new(log),
@@ -210,6 +248,7 @@ pub fn run() {
         std::thread::spawn(move || reader_loop(output, shared, pty_for_reader, hwnd_raw));
 
         APP.with(|a| *a.borrow_mut() = Some(app));
+        let _ = ShowWindow(hwnd, windows::Win32::UI::WindowsAndMessaging::SW_SHOW);
 
         let mut msg = MSG::default();
         while GetMessageW(&mut msg, None, 0, 0).as_bool() {
@@ -250,8 +289,8 @@ fn reader_loop(mut output: std::fs::File, shared: Arc<Mutex<Shared>>, pty: Arc<M
 }
 
 unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
-    // Our own frame: the whole window is client area, drawn by us, like the Mac.
     match msg {
+        // The whole window is ours to draw; Windows keeps no title bar or border.
         WM_NCCALCSIZE if wparam.0 != 0 => {
             if IsZoomed(hwnd).as_bool() {
                 // Maximized windows hang over the screen edge by the frame size; pull the content back in.
@@ -266,9 +305,8 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             }
             return LRESULT(0);
         }
+        WM_NCACTIVATE => return LRESULT(1),
         WM_NCHITTEST => return LRESULT(hit_test(hwnd, lparam) as isize),
-        // Stop Windows painting its old frame when focus changes.
-        WM_NCACTIVATE => return DefWindowProcW(hwnd, msg, wparam, LPARAM(-1)),
         _ => {}
     }
     let handled = APP.with(|cell| {
@@ -310,13 +348,12 @@ impl App {
                     Some(LRESULT(0))
                 }
                 WM_SIZE => {
-                    update_shape(self.hwnd);
                     self.fit_to_window();
                     Some(LRESULT(0))
                 }
                 WM_DPICHANGED => {
                     let r = &*(lparam.0 as *const RECT);
-                    let _ = windows::Win32::UI::WindowsAndMessaging::SetWindowPos(
+                    let _ = SetWindowPos(
                         self.hwnd,
                         None,
                         r.left,
@@ -326,7 +363,6 @@ impl App {
                         windows::Win32::UI::WindowsAndMessaging::SWP_NOZORDER,
                     );
                     self.make_fonts();
-                    update_shape(self.hwnd);
                     self.fit_to_window();
                     Some(LRESULT(0))
                 }
@@ -369,51 +405,71 @@ impl App {
                         self.tracking_mouse = TrackMouseEvent(&mut tme).is_ok();
                     }
                     let (x, y) = xy(lparam);
-                    let hover = self.light_at(x, y).is_some() || self.in_lights_group(x, y);
-                    if hover != self.lights_hover {
-                        self.lights_hover = hover;
+                    let hover = self.layout.button_at(x, y);
+                    if hover != self.hover {
+                        self.hover = hover;
                         self.render();
                     }
                     Some(LRESULT(0))
                 }
                 WM_MOUSELEAVE => {
                     self.tracking_mouse = false;
-                    if self.lights_hover {
-                        self.lights_hover = false;
+                    if self.hover.is_some() {
+                        self.hover = None;
                         self.render();
                     }
                     Some(LRESULT(0))
                 }
                 WM_LBUTTONDOWN => {
                     let (x, y) = xy(lparam);
-                    self.lights_pressed = self.light_at(x, y);
-                    if self.lights_pressed.is_some() {
+                    self.pressed = self.layout.button_at(x, y);
+                    if self.pressed.is_some() {
                         SetCapture(self.hwnd);
+                        self.render();
                     }
                     Some(LRESULT(0))
                 }
                 WM_LBUTTONUP => {
                     let (x, y) = xy(lparam);
-                    if let Some(i) = self.lights_pressed.take() {
+                    if let Some(b) = self.pressed.take() {
                         let _ = ReleaseCapture();
-                        if self.light_at(x, y) == Some(i) {
-                            match i {
-                                0 => {
-                                    let _ = PostMessageW(Some(self.hwnd), WM_CLOSE, WPARAM(0), LPARAM(0));
-                                }
-                                1 => {
-                                    let _ = ShowWindow(self.hwnd, SW_MINIMIZE);
-                                }
-                                _ => {
-                                    let cmd = if IsZoomed(self.hwnd).as_bool() { SW_RESTORE } else { SW_MAXIMIZE };
-                                    let _ = ShowWindow(self.hwnd, cmd);
-                                }
-                            }
+                        if self.layout.button_at(x, y) == Some(b) {
+                            self.press(b);
                         }
+                        self.render();
                     }
                     Some(LRESULT(0))
                 }
                 _ => None,
+            }
+        }
+    }
+
+    fn press(&mut self, b: Button) {
+        unsafe {
+            match b {
+                Button::Close | Button::WinClose => {
+                    let _ = PostMessageW(Some(self.hwnd), WM_CLOSE, WPARAM(0), LPARAM(0));
+                }
+                Button::Minimize | Button::WinMinimize => {
+                    let _ = ShowWindow(self.hwnd, SW_MINIMIZE);
+                }
+                Button::Zoom | Button::WinMaximize => {
+                    let cmd = if IsZoomed(self.hwnd).as_bool() { SW_RESTORE } else { SW_MAXIMIZE };
+                    let _ = ShowWindow(self.hwnd, cmd);
+                }
+                Button::Terminal => {}
+                Button::Folder => {
+                    let home = std::env::var("USERPROFILE").unwrap_or_else(|_| "C:\\".into());
+                    let _ = std::process::Command::new("explorer.exe").arg(home).spawn();
+                }
+                Button::Glow => {
+                    self.glow = (self.glow + 1) % GLOWS.len();
+                    self.glow_cache = None;
+                    if let Some(p) = &self.settings_path {
+                        let _ = std::fs::write(p, theme::settings_text(self.glow));
+                    }
+                }
             }
         }
     }
@@ -440,8 +496,8 @@ impl App {
             out.push(0x1b);
         }
         match ch {
-            '\u{8}' => out.push(0x7f),   // Backspace
-            '\u{7f}' => out.push(0x08),  // Ctrl+Backspace
+            '\u{8}' => out.push(0x7f),  // Backspace
+            '\u{7f}' => out.push(0x08), // Ctrl+Backspace
             _ => {
                 let mut b = [0u8; 4];
                 out.extend_from_slice(ch.encode_utf8(&mut b).as_bytes());
@@ -549,34 +605,8 @@ impl App {
         unsafe { GetDpiForWindow(self.hwnd) as f32 / 96.0 }
     }
 
-    fn left(&self) -> f32 {
-        PAD_DIP * self.dpi_scale()
-    }
-
-    fn top(&self) -> f32 {
-        TITLE_DIP * self.dpi_scale() + 2.0
-    }
-
-    /// Which window button (0 close, 1 minimize, 2 zoom) is under this client pixel.
-    fn light_at(&self, x: f32, y: f32) -> Option<usize> {
-        let s = self.dpi_scale();
-        let cy = TITLE_DIP * s / 2.0;
-        LIGHTS.iter().position(|&(cx, _)| {
-            let (dx, dy) = (x - cx * s, y - cy);
-            dx * dx + dy * dy <= (LIGHT_R * s + 1.0).powi(2)
-        })
-    }
-
-    fn in_lights_group(&self, x: f32, y: f32) -> bool {
-        let s = self.dpi_scale();
-        x >= (LIGHTS[0].0 - LIGHT_R - 2.0) * s
-            && x <= (LIGHTS[2].0 + LIGHT_R + 2.0) * s
-            && y >= 4.0 * s
-            && y <= (TITLE_DIP - 4.0) * s
-    }
-
     fn make_fonts(&mut self) {
-        let size = FONT_DIP * self.dpi_scale();
+        let s = self.dpi_scale();
         let family = PCWSTR(self.font_family.as_ptr());
         let mut formats = Vec::new();
         unsafe {
@@ -588,7 +618,7 @@ impl App {
             ] {
                 let f = self
                     .dwrite
-                    .CreateTextFormat(family, None, weight, style, DWRITE_FONT_STRETCH_NORMAL, size, w!("en-us"))
+                    .CreateTextFormat(family, None, weight, style, DWRITE_FONT_STRETCH_NORMAL, FONT_DIP * s, w!("en-us"))
                     .expect("text format");
                 let _ = f.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
                 formats.push(f);
@@ -599,31 +629,30 @@ impl App {
                 let mut m = DWRITE_TEXT_METRICS::default();
                 if layout.GetMetrics(&mut m).is_ok() {
                     self.cell_w = m.widthIncludingTrailingWhitespace / 10.0;
-                    self.cell_h = m.height.ceil();
-                    self.baseline_fix = 0.0;
+                    self.cell_h = (m.height * 1.08).ceil();
                 }
             }
+            let icon = |size: f32| {
+                let f = self
+                    .dwrite
+                    .CreateTextFormat(
+                        PCWSTR(self.icon_family.as_ptr()),
+                        None,
+                        DWRITE_FONT_WEIGHT_NORMAL,
+                        DWRITE_FONT_STYLE_NORMAL,
+                        DWRITE_FONT_STRETCH_NORMAL,
+                        size * s,
+                        w!("en-us"),
+                    )
+                    .ok()?;
+                let _ = f.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+                let _ = f.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+                Some(f)
+            };
+            self.icon_format = icon(15.0);
+            self.icon_small = icon(10.0);
         }
         self.formats = formats;
-        unsafe {
-            self.title_format = self
-                .dwrite
-                .CreateTextFormat(
-                    w!("Segoe UI Variable Text"),
-                    None,
-                    windows::Win32::Graphics::DirectWrite::DWRITE_FONT_WEIGHT_SEMI_BOLD,
-                    DWRITE_FONT_STYLE_NORMAL,
-                    DWRITE_FONT_STRETCH_NORMAL,
-                    12.5 * self.dpi_scale(),
-                    w!("en-us"),
-                )
-                .ok();
-            if let Some(f) = &self.title_format {
-                let _ = f.SetTextAlignment(windows::Win32::Graphics::DirectWrite::DWRITE_TEXT_ALIGNMENT_CENTER);
-                let _ = f.SetParagraphAlignment(windows::Win32::Graphics::DirectWrite::DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
-                let _ = f.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
-            }
-        }
     }
 
     fn client_size(&self) -> (u32, u32) {
@@ -636,9 +665,11 @@ impl App {
 
     fn fit_to_window(&mut self) {
         let (w, h) = self.client_size();
-        let (left, top) = (self.left(), self.top());
-        let cols = (((w as f32) - 2.0 * left) / self.cell_w).floor().max(2.0) as usize;
-        let rows = (((h as f32) - top - left) / self.cell_h).floor().max(1.0) as usize;
+        let maximized = unsafe { IsZoomed(self.hwnd).as_bool() };
+        self.layout = Layout::new(w as f32, h as f32, self.dpi_scale(), maximized);
+        let text = self.layout.text;
+        let cols = (text.w() / self.cell_w).floor().max(2.0) as usize;
+        let rows = (text.h() / self.cell_h).floor().max(1.0) as usize;
         {
             let mut s = self.shared.lock().unwrap();
             if s.term.cols() != cols || s.term.rows() != rows {
@@ -646,73 +677,288 @@ impl App {
                 let _ = self.pty.lock().unwrap().resize(cols as u16, rows as u16);
             }
         }
-        if let Some(t) = &self.target {
-            unsafe {
-                if t.Resize(&D2D_SIZE_U { width: w, height: h }).is_err() {
-                    self.target = None;
-                }
+        if let Some(g) = self.gfx.as_mut() {
+            if g.resize(w, h).is_err() {
+                self.drop_gpu();
             }
         }
         self.render();
     }
 
-    fn ensure_target(&mut self) -> bool {
-        if self.target.is_some() {
-            return true;
+    fn drop_gpu(&mut self) {
+        self.gfx = None;
+        self.brush = None;
+        self.glow_cache = None;
+    }
+
+    fn ensure_gpu(&mut self) -> bool {
+        if self.gfx.is_none() {
+            let (w, h) = self.client_size();
+            match Gfx::new(self.hwnd, w, h) {
+                Ok(g) => self.gfx = Some(g),
+                Err(_) => return false,
+            }
         }
-        let (w, h) = self.client_size();
-        let props = D2D1_RENDER_TARGET_PROPERTIES {
-            r#type: D2D1_RENDER_TARGET_TYPE_DEFAULT,
-            pixelFormat: D2D1_PIXEL_FORMAT { format: DXGI_FORMAT_B8G8R8A8_UNORM, alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED },
-            dpiX: 96.0,
-            dpiY: 96.0,
-            usage: D2D1_RENDER_TARGET_USAGE_NONE,
-            minLevel: D2D1_FEATURE_LEVEL_DEFAULT,
-        };
-        let hprops = D2D1_HWND_RENDER_TARGET_PROPERTIES {
-            hwnd: self.hwnd,
-            pixelSize: D2D_SIZE_U { width: w, height: h },
-            presentOptions: D2D1_PRESENT_OPTIONS_IMMEDIATELY,
-        };
+        let g = self.gfx.as_mut().unwrap();
+        if g.bind().is_err() {
+            self.drop_gpu();
+            return false;
+        }
+        if self.brush.is_none() {
+            unsafe {
+                self.brush = g.dc.CreateSolidColorBrush(&rgb(theme::TEXT), None).ok();
+            }
+        }
+        self.brush.is_some()
+    }
+
+    /// Shape and glow depend only on the window size and color theme, so they're built once and
+    /// reused every frame.
+    fn chrome(&mut self) -> Option<ChromeCache> {
+        let l = self.layout;
+        let key = (l.window.r as u32, l.window.b as u32, self.glow, l.maximized);
+        if let Some(c) = &self.glow_cache {
+            if c.key == key {
+                return Some(c.clone());
+            }
+        }
+        let g = self.gfx.as_ref()?;
+        let dc = g.dc.clone();
+        let factory = g.factory.clone();
+        let s = l.scale;
         unsafe {
-            let Ok(t) = self.d2d.CreateHwndRenderTarget(&props, &hprops) else { return false };
-            // ClearType needs an opaque surface; the glass background is see-through.
-            t.SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
-            let Ok(b) = t.CreateSolidColorBrush(&rgb(0xCCCCCC), None) else { return false };
-            self.brush = Some(b);
-            self.target = Some(t);
+            let wobble = if l.maximized { 0.0 } else { 5.0 * s };
+            let shape = blob_path(&factory, &l, 0.0, wobble)?;
+            let inner = blob_path(&factory, &l, 5.0 * s, wobble)?;
+            let rim = self.rim_brush(1.0)?;
+
+            // Bloom: the rim drawn thick, plus the pool of light under the window, then blurred.
+            let list = dc.CreateCommandList().ok()?;
+            let old = dc.GetTarget().ok();
+            dc.SetTarget(&list);
+            dc.BeginDraw();
+            if !l.maximized {
+                dc.DrawGeometry(&shape, &rim, 10.0 * s, None);
+                rim.SetOpacity(0.55);
+                dc.FillEllipse(
+                    &ellipse_xy(l.body.cx(), l.body.b + 14.0 * s, l.body.w() * 0.34, 7.0 * s),
+                    &rim,
+                );
+                rim.SetOpacity(1.0);
+            }
+            let _ = dc.EndDraw(None, None);
+            let _ = list.Close();
+            dc.SetTarget(old.as_ref());
+
+            let blur = dc.CreateEffect(&CLSID_D2D1GaussianBlur).ok()?;
+            blur.SetInput(0, &list, true);
+            let dev: f32 = 11.0 * s;
+            let _ = blur.SetValue(
+                D2D1_GAUSSIANBLUR_PROP_STANDARD_DEVIATION.0 as u32,
+                D2D1_PROPERTY_TYPE_FLOAT,
+                &dev.to_le_bytes(),
+            );
+            let _ = blur.SetValue(
+                D2D1_GAUSSIANBLUR_PROP_BORDER_MODE.0 as u32,
+                D2D1_PROPERTY_TYPE_ENUM,
+                &(D2D1_BORDER_MODE_SOFT.0 as u32).to_le_bytes(),
+            );
+            let cache = ChromeCache {
+                key,
+                bloom: blur,
+                shape: shape.cast().ok()?,
+                inner: inner.cast().ok()?,
+                rim,
+            };
+            self.glow_cache = Some(cache.clone());
+            Some(cache)
         }
-        true
+    }
+
+    /// Diagonal neon sweep through the theme's four colors.
+    fn rim_brush(&self, strength: f32) -> Option<ID2D1LinearGradientBrush> {
+        let glow = GLOWS[self.glow];
+        let c = |hex: u32| D2D1_COLOR_F { a: strength, ..rgb(hex) };
+        let [c0, c1, c2, c3] = glow.colors;
+        let stops = [
+            D2D1_GRADIENT_STOP { position: 0.0, color: c(c0) },
+            D2D1_GRADIENT_STOP { position: 0.30, color: c(c1) },
+            D2D1_GRADIENT_STOP { position: 0.62, color: c(c2) },
+            D2D1_GRADIENT_STOP { position: 1.0, color: c(c3) },
+        ];
+        let b = self.layout.body;
+        self.linear_brush(&stops, (b.l, b.t), (b.r, b.b))
+    }
+
+    fn linear_brush(&self, stops: &[D2D1_GRADIENT_STOP], from: (f32, f32), to: (f32, f32)) -> Option<ID2D1LinearGradientBrush> {
+        let g = self.gfx.as_ref()?;
+        unsafe {
+            let coll = g
+                .dc
+                .CreateGradientStopCollection(
+                    stops,
+                    D2D1_COLOR_SPACE_SRGB,
+                    D2D1_COLOR_SPACE_SRGB,
+                    D2D1_BUFFER_PRECISION_8BPC_UNORM,
+                    D2D1_EXTEND_MODE_CLAMP,
+                    D2D1_COLOR_INTERPOLATION_MODE_STRAIGHT,
+                )
+                .ok()?;
+            let props = D2D1_LINEAR_GRADIENT_BRUSH_PROPERTIES {
+                startPoint: Vector2 { X: from.0, Y: from.1 },
+                endPoint: Vector2 { X: to.0, Y: to.1 },
+            };
+            g.dc.CreateLinearGradientBrush(&props, None, &coll).ok()
+        }
     }
 
     fn render(&mut self) {
-        if !self.ensure_target() {
+        if !self.ensure_gpu() {
             return;
         }
-        let target = self.target.clone().unwrap();
+        let chrome = self.chrome();
+        let dc = self.gfx.as_ref().unwrap().dc.clone();
         let brush = self.brush.clone().unwrap();
+        let l = self.layout;
+        let s = l.scale;
         let (cw, ch) = (self.cell_w, self.cell_h);
+        let glow = GLOWS[self.glow];
 
         let shared = self.shared.clone();
-        let s = shared.lock().unwrap();
-        let term = &s.term;
+        let st = shared.lock().unwrap();
+        let term = &st.term;
         let offset = self.scroll_offset.min(term.scrollback_len());
-        let default_bg = rgb(BG);
-        let default_fg = rgb(FG);
-        let (left, top) = (self.left(), self.top());
+        let default_fg = rgb(theme::TEXT);
 
         unsafe {
-            target.BeginDraw();
-            // Premultiplied: the window shows the blurred desktop through the 5% gap.
-            let glass = D2D1_COLOR_F {
-                r: default_bg.r * BG_OPACITY,
-                g: default_bg.g * BG_OPACITY,
-                b: default_bg.b * BG_OPACITY,
-                a: BG_OPACITY,
-            };
-            target.Clear(Some(&glass));
-            self.draw_title_bar(&target, &brush, &term.title);
+            dc.BeginDraw();
+            dc.Clear(Some(&D2D1_COLOR_F { r: 0.0, g: 0.0, b: 0.0, a: 0.0 }));
 
+            // 1. Bloom and the light pool under the window.
+            if let Some(c) = &chrome {
+                if !l.maximized {
+                    if let Ok(img) = c.bloom.GetOutput() {
+                        let passes = if self.focused { 3 } else { 1 };
+                        for _ in 0..passes {
+                            dc.DrawImage(&img, None, None, D2D1_INTERPOLATION_MODE_LINEAR, D2D1_COMPOSITE_MODE_SOURCE_OVER);
+                        }
+                    }
+                }
+            }
+
+            if let Some(c) = &chrome {
+                let b = l.body;
+                // 2. Deep glass: dark base, then colored light washing in from two corners.
+                brush.SetColor(&D2D1_COLOR_F { a: theme::BODY_OPACITY, ..rgb(theme::BODY) });
+                let _ = dc.FillGeometry(&c.shape, &brush, None);
+                let wash = [
+                    D2D1_GRADIENT_STOP { position: 0.0, color: D2D1_COLOR_F { a: 0.75, ..rgb(theme::TINT_A) } },
+                    D2D1_GRADIENT_STOP { position: 0.45, color: D2D1_COLOR_F { a: 0.0, ..rgb(theme::TINT_A) } },
+                    D2D1_GRADIENT_STOP { position: 0.62, color: D2D1_COLOR_F { a: 0.0, ..rgb(theme::TINT_B) } },
+                    D2D1_GRADIENT_STOP { position: 1.0, color: D2D1_COLOR_F { a: 0.70, ..rgb(theme::TINT_B) } },
+                ];
+                if let Some(w) = self.linear_brush(&wash, (b.l, b.t), (b.r, b.b)) {
+                    let _ = dc.FillGeometry(&c.shape, &w, None);
+                }
+
+                // 3. The glass tube: a wide soft band, a brighter band, then a hot core line.
+                let strength = if self.focused { 1.0 } else { 0.5 };
+                c.rim.SetOpacity(0.16 * strength);
+                let _ = dc.DrawGeometry(&c.shape, &c.rim, 22.0 * s, None);
+                c.rim.SetOpacity(0.5 * strength);
+                let _ = dc.DrawGeometry(&c.shape, &c.rim, 7.0 * s, None);
+                c.rim.SetOpacity(1.0 * strength);
+                let _ = dc.DrawGeometry(&c.shape, &c.rim, 2.0 * s, None);
+                c.rim.SetOpacity(1.0);
+
+                // 4. Specular highlight: white light along the upper inside edge.
+                let spec = [
+                    D2D1_GRADIENT_STOP { position: 0.0, color: D2D1_COLOR_F { a: 0.85, ..rgb(0xFFFFFF) } },
+                    D2D1_GRADIENT_STOP { position: 1.0, color: D2D1_COLOR_F { a: 0.0, ..rgb(0xFFFFFF) } },
+                ];
+                if let Some(w) = self.linear_brush(&spec, (b.l, b.t), (b.l + b.w() * 0.25, b.t + b.h() * 0.45)) {
+                    let _ = dc.DrawGeometry(&c.inner, &w, 1.6 * s, None);
+                }
+                if let Some(w) = self.linear_brush(&spec, (b.r, b.b), (b.r - b.w() * 0.2, b.b - b.h() * 0.4)) {
+                    w.SetOpacity(0.45);
+                    let _ = dc.DrawGeometry(&c.inner, &w, 1.2 * s, None);
+                }
+            }
+
+            // 5. Glass pills: window buttons, window controls, sidebar.
+            let pill = |r: crate::layout::Rect| D2D1_ROUNDED_RECT {
+                rect: D2D_RECT_F { left: r.l, top: r.t, right: r.r, bottom: r.b },
+                radiusX: r.w().min(r.h()) / 2.0,
+                radiusY: r.w().min(r.h()) / 2.0,
+            };
+            for r in [l.lights_pill, l.controls_pill, l.sidebar] {
+                brush.SetColor(&D2D1_COLOR_F { a: 0.07, ..rgb(0xFFFFFF) });
+                dc.FillRoundedRectangle(&pill(r), &brush);
+                let edge = [
+                    D2D1_GRADIENT_STOP { position: 0.0, color: D2D1_COLOR_F { a: 0.45, ..rgb(0xFFFFFF) } },
+                    D2D1_GRADIENT_STOP { position: 1.0, color: D2D1_COLOR_F { a: 0.08, ..rgb(0xFFFFFF) } },
+                ];
+                if let Some(e) = self.linear_brush(&edge, (r.l, r.t), (r.l, r.b)) {
+                    dc.DrawRoundedRectangle(&pill(r), &e, 1.0, None);
+                }
+            }
+            // Traffic lights: red, amber, and an open ring, like the design.
+            for (b, color) in [(Button::Close, 0xFF5F57), (Button::Minimize, 0xFEBC2E)] {
+                let (x, y, r) = l.button(b);
+                let mut c = rgb(if self.focused || self.hover.is_some() { color } else { 0x5A5E68 });
+                if self.pressed == Some(b) {
+                    c = D2D1_COLOR_F { r: c.r * 0.75, g: c.g * 0.75, b: c.b * 0.75, a: 1.0 };
+                }
+                brush.SetColor(&c);
+                dc.FillEllipse(&ellipse(x, y, r), &brush);
+                if self.hover == Some(b) {
+                    brush.SetColor(&D2D1_COLOR_F { a: 0.6, ..rgb(0x000000) });
+                    self.icon(&dc, &brush, if b == Button::Close { '\u{E8BB}' } else { '\u{E921}' }, x, y, true);
+                }
+            }
+            {
+                let (x, y, r) = l.button(Button::Zoom);
+                brush.SetColor(&D2D1_COLOR_F { a: if self.hover == Some(Button::Zoom) { 1.0 } else { 0.75 }, ..rgb(0xE8ECF2) });
+                dc.DrawEllipse(&ellipse(x, y, r - 0.6 * s), &brush, 1.4 * s, None);
+            }
+            // Window controls on the right.
+            let maximized_glyph = if l.maximized { '\u{E923}' } else { '\u{E922}' };
+            for (b, glyph) in [(Button::WinMinimize, '\u{E921}'), (Button::WinMaximize, maximized_glyph), (Button::WinClose, '\u{E8BB}')] {
+                let (x, y, r) = l.button(b);
+                if self.hover == Some(b) {
+                    let bg = if b == Button::WinClose { D2D1_COLOR_F { a: 0.9, ..rgb(0xE5484D) } } else { D2D1_COLOR_F { a: 0.12, ..rgb(0xFFFFFF) } };
+                    brush.SetColor(&bg);
+                    dc.FillEllipse(&ellipse(x, y, r), &brush);
+                }
+                brush.SetColor(&rgb(if self.hover == Some(b) { 0xFFFFFF } else { theme::ICON }));
+                self.icon(&dc, &brush, glyph, x, y, true);
+            }
+            // Sidebar: terminal (active), files, glow color.
+            for (b, glyph) in [(Button::Terminal, '\u{E756}'), (Button::Folder, '\u{E8B7}'), (Button::Glow, '\u{E790}')] {
+                let (x, y, r) = l.button(b);
+                if b == Button::Terminal || self.hover == Some(b) {
+                    let a = if b == Button::Terminal { 0.10 } else { 0.07 };
+                    brush.SetColor(&D2D1_COLOR_F { a, ..rgb(0xFFFFFF) });
+                    dc.FillRoundedRectangle(
+                        &D2D1_ROUNDED_RECT {
+                            rect: D2D_RECT_F { left: x - r, top: y - r, right: x + r, bottom: y + r },
+                            radiusX: 9.0 * s,
+                            radiusY: 9.0 * s,
+                        },
+                        &brush,
+                    );
+                }
+                let color = match b {
+                    Button::Terminal => rgb(0xFFFFFF),
+                    Button::Glow => rgb(glow.accent()),
+                    _ => rgb(if self.hover == Some(b) { 0xFFFFFF } else { theme::ICON }),
+                };
+                brush.SetColor(&color);
+                self.icon(&dc, &brush, glyph, x, y, false);
+            }
+
+            // 5. Terminal text.
+            let (left, top) = (l.text.l, l.text.t);
             let mut text: Vec<u16> = Vec::with_capacity(term.cols() * 2);
             for row in 0..term.rows() {
                 let line = term.line(row, offset);
@@ -738,86 +984,74 @@ impl App {
                             break;
                         }
                     }
-                    let (fg, bg) = colors(&attrs, default_fg, default_bg);
+                    let (fg, bg) = colors(&attrs, default_fg);
                     let x0 = left + start as f32 * cw;
                     let x1 = left + col as f32 * cw;
-                    if bg != default_bg {
+                    if let Some(bg) = bg {
                         brush.SetColor(&bg);
-                        target.FillRectangle(&D2D_RECT_F { left: x0, top: y, right: x1, bottom: y + ch }, &brush);
+                        dc.FillRectangle(&D2D_RECT_F { left: x0, top: y, right: x1, bottom: y + ch }, &brush);
                     }
                     if text.iter().any(|&u| u != b' ' as u16) {
                         brush.SetColor(&fg);
-                        self.draw_text(&target, &brush, &text, &attrs, x0, y, x1 + cw);
+                        self.draw_text(&dc, &brush, &text, &attrs, x0, y, x1 + cw);
                     }
                     if attrs.underline {
                         brush.SetColor(&fg);
-                        target.FillRectangle(
-                            &D2D_RECT_F { left: x0, top: y + ch - 2.0, right: x1, bottom: y + ch - 1.0 },
-                            &brush,
-                        );
+                        dc.FillRectangle(&D2D_RECT_F { left: x0, top: y + ch - 2.0, right: x1, bottom: y + ch - 1.0 }, &brush);
                     }
                 }
             }
 
-            // Cursor: solid block when focused, outline when not.
+            // Cursor: a block in the glow color when focused, an outline when not.
             if term.cursor_visible && offset == 0 {
                 let (cr, cc) = term.cursor();
                 let x = left + cc as f32 * cw;
                 let y = top + cr as f32 * ch;
                 let cell = term.line(cr, 0)[cc];
                 let width = if cell.wide { 2.0 * cw } else { cw };
-                brush.SetColor(&default_fg);
-                let rect = D2D_RECT_F { left: x, top: y, right: x + width, bottom: y + ch };
+                let rect = D2D_RECT_F { left: x, top: y + 1.0, right: x + width, bottom: y + ch - 1.0 };
+                brush.SetColor(&rgb(glow.accent()));
                 if self.focused {
-                    target.FillRectangle(&rect, &brush);
+                    dc.FillRectangle(&rect, &brush);
                     if cell.ch != ' ' {
                         let mut b = [0u16; 2];
                         let t: Vec<u16> = cell.ch.encode_utf16(&mut b).to_vec();
-                        brush.SetColor(&default_bg);
-                        self.draw_text(&target, &brush, &t, &cell.attrs, x, y, x + width + cw);
+                        brush.SetColor(&rgb(theme::BODY));
+                        self.draw_text(&dc, &brush, &t, &cell.attrs, x, y, x + width + cw);
                     }
                 } else {
-                    target.DrawRectangle(&rect, &brush, 1.0, None);
+                    dc.DrawRectangle(&rect, &brush, 1.0, None);
                 }
             }
 
             // Scrolled back: a thin bar on the right shows where we are.
             if offset > 0 {
-                let (w, h) = self.client_size();
                 let total = (term.scrollback_len() + term.rows()) as f32;
-                let top = (term.scrollback_len() - offset) as f32 / total * h as f32;
-                let len = term.rows() as f32 / total * h as f32;
-                brush.SetColor(&rgb(0x606060));
-                target.FillRectangle(
-                    &D2D_RECT_F { left: w as f32 - 4.0, top, right: w as f32, bottom: top + len.max(8.0) },
+                let t = l.text.t + (term.scrollback_len() - offset) as f32 / total * l.text.h();
+                let len = (term.rows() as f32 / total * l.text.h()).max(10.0 * s);
+                brush.SetColor(&D2D1_COLOR_F { a: 0.5, ..rgb(glow.accent()) });
+                dc.FillRoundedRectangle(
+                    &D2D1_ROUNDED_RECT {
+                        rect: D2D_RECT_F { left: l.text.r + 10.0 * s, top: t, right: l.text.r + 13.0 * s, bottom: t + len },
+                        radiusX: 1.5 * s,
+                        radiusY: 1.5 * s,
+                    },
                     &brush,
                 );
             }
 
-            // A soft 1 px outline along the rounded edge, like the Mac, which also hides the
-            // stair-steps of the clipped corners.
-            if !IsZoomed(self.hwnd).as_bool() {
-                let (w, h) = self.client_size();
-                let rad = CORNER_DIP * self.dpi_scale();
-                let edge = D2D1_ROUNDED_RECT {
-                    rect: D2D_RECT_F { left: 0.5, top: 0.5, right: w as f32 - 0.5, bottom: h as f32 - 0.5 },
-                    radiusX: rad - 0.5,
-                    radiusY: rad - 0.5,
-                };
-                brush.SetColor(&D2D1_COLOR_F { r: 0.30, g: 0.32, b: 0.37, a: 1.0 });
-                target.DrawRoundedRectangle(&edge, &brush, 1.5, None);
-            }
-
-            let result = target.EndDraw(None, None);
+            let ended = dc.EndDraw(None, None);
+            let presented = self.gfx.as_mut().unwrap().present();
             let now = Instant::now();
-            if result.is_err() {
+            if ended.is_err() || presented.is_err() {
                 // Device lost (driver reset, remote session change): rebuild next frame.
-                self.target = None;
-                self.brush = None;
+                drop(st);
+                self.drop_gpu();
+                return;
             }
-            self.meter.frame(s.last_output, now);
+            self.meter.frame(st.last_output, now);
 
-            if !self.first_frame_logged && s.last_output.is_some() {
+            if !self.first_frame_logged && st.last_output.is_some() {
                 self.first_frame_logged = true;
                 if let Ok(d) = std::env::var("LOCALAPPDATA") {
                     let _ = std::fs::write(
@@ -857,62 +1091,27 @@ impl App {
         }
     }
 
-    fn draw_title_bar(&self, target: &ID2D1HwndRenderTarget, brush: &ID2D1SolidColorBrush, shell_title: &str) {
-        let s = self.dpi_scale();
-        let (w, _) = self.client_size();
-        let bar = TITLE_DIP * s;
+    fn icon(&self, dc: &windows::Win32::Graphics::Direct2D::ID2D1DeviceContext, brush: &ID2D1SolidColorBrush, glyph: char, x: f32, y: f32, small: bool) {
+        let Some(f) = (if small { &self.icon_small } else { &self.icon_format }) else { return };
+        let mut b = [0u16; 2];
+        let t = glyph.encode_utf16(&mut b);
+        let r = 20.0 * self.layout.scale;
         unsafe {
-            if let Some(f) = &self.title_format {
-                let title = if shell_title.is_empty() { APP_NAME } else { shell_title };
-                let t: Vec<u16> = title.encode_utf16().collect();
-                brush.SetColor(&rgb(if self.focused { 0xC8CCD4 } else { 0x7A7F8A }));
-                let rect = D2D_RECT_F { left: 80.0 * s, top: 0.0, right: w as f32 - 80.0 * s, bottom: bar };
-                target.DrawText(&t, f, &rect, brush, D2D1_DRAW_TEXT_OPTIONS_CLIP, DWRITE_MEASURING_MODE_NATURAL);
-            }
-            let cy = bar / 2.0;
-            for (i, &(cx, color)) in LIGHTS.iter().enumerate() {
-                let center = Vector2 { X: cx * s, Y: cy };
-                let dot = D2D1_ELLIPSE { point: center, radiusX: LIGHT_R * s, radiusY: LIGHT_R * s };
-                // Like macOS: colored when the window is active or hovered, gray otherwise.
-                let lit = self.focused || self.lights_hover;
-                let mut c = rgb(if lit { color } else { 0x4A4E57 });
-                if self.lights_pressed == Some(i) {
-                    c = D2D1_COLOR_F { r: c.r * 0.75, g: c.g * 0.75, b: c.b * 0.75, a: 1.0 };
-                }
-                brush.SetColor(&c);
-                target.FillEllipse(&dot, brush);
-                if self.lights_hover {
-                    brush.SetColor(&D2D1_COLOR_F { r: 0.0, g: 0.0, b: 0.0, a: 0.55 });
-                    let k = 2.8 * s;
-                    let line = |a: (f32, f32), b: (f32, f32)| {
-                        target.DrawLine(
-                            Vector2 { X: center.X + a.0, Y: center.Y + a.1 },
-                            Vector2 { X: center.X + b.0, Y: center.Y + b.1 },
-                            brush,
-                            1.2 * s,
-                            None,
-                        );
-                    };
-                    match i {
-                        0 => {
-                            line((-k, -k), (k, k));
-                            line((-k, k), (k, -k));
-                        }
-                        1 => line((-k - 0.5, 0.0), (k + 0.5, 0.0)),
-                        _ => {
-                            line((-k - 0.5, 0.0), (k + 0.5, 0.0));
-                            line((0.0, -k - 0.5), (0.0, k + 0.5));
-                        }
-                    }
-                }
-            }
+            dc.DrawText(
+                t,
+                f,
+                &D2D_RECT_F { left: x - r, top: y - r, right: x + r, bottom: y + r },
+                brush,
+                D2D1_DRAW_TEXT_OPTIONS_CLIP,
+                DWRITE_MEASURING_MODE_NATURAL,
+            );
         }
     }
 
     #[allow(clippy::too_many_arguments)]
     fn draw_text(
         &self,
-        target: &ID2D1HwndRenderTarget,
+        dc: &windows::Win32::Graphics::Direct2D::ID2D1DeviceContext,
         brush: &ID2D1SolidColorBrush,
         text: &[u16],
         attrs: &Attrs,
@@ -921,9 +1120,9 @@ impl App {
         right: f32,
     ) {
         let idx = attrs.bold as usize + 2 * attrs.italic as usize;
-        let rect = D2D_RECT_F { left: x, top: y + self.baseline_fix, right, bottom: y + self.cell_h };
+        let rect = D2D_RECT_F { left: x, top: y, right, bottom: y + self.cell_h };
         unsafe {
-            target.DrawText(
+            dc.DrawText(
                 text,
                 &self.formats[idx],
                 &rect,
@@ -935,92 +1134,62 @@ impl App {
     }
 }
 
-/// Dark, rounded, blurred-glass window like the Mac. Windows 10 ignores the parts it lacks.
-fn apply_chrome(hwnd: HWND) {
-    use windows::Win32::Graphics::Dwm::{
-        DwmExtendFrameIntoClientArea, DwmSetWindowAttribute, DWMWA_BORDER_COLOR, DWMWA_SYSTEMBACKDROP_TYPE,
-        DWMWA_USE_IMMERSIVE_DARK_MODE, DWMWA_WINDOW_CORNER_PREFERENCE, DWMSBT_TRANSIENTWINDOW, DWMWCP_DONOTROUND,
-        DWMWA_COLOR_NONE,
-        DWMWINDOWATTRIBUTE,
-    };
-    use windows::Win32::UI::Controls::MARGINS;
-    unsafe fn set<T>(hwnd: HWND, attr: DWMWINDOWATTRIBUTE, value: T) {
-        let _ = DwmSetWindowAttribute(hwnd, attr, &value as *const T as *const std::ffi::c_void, std::mem::size_of::<T>() as u32);
-    }
-    unsafe {
-        set(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, windows::core::BOOL(1));
-        set(hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_DONOTROUND);
-        // Acrylic: the blurred see-through backdrop.
-        set(hwnd, DWMWA_SYSTEMBACKDROP_TYPE, DWMSBT_TRANSIENTWINDOW);
-        // We draw our own rounded edge; Windows' square one would be clipped anyway.
-        set(hwnd, DWMWA_BORDER_COLOR, DWMWA_COLOR_NONE);
-        // Let the backdrop and shadow reach under our own drawn title bar.
-        let m = MARGINS { cxLeftWidth: -1, cxRightWidth: -1, cyTopHeight: -1, cyBottomHeight: -1 };
-        let _ = DwmExtendFrameIntoClientArea(hwnd, &m);
-        let _ = SetWindowPos(hwnd, None, 0, 0, 0, 0, SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER);
-    }
+fn ellipse_xy(x: f32, y: f32, rx: f32, ry: f32) -> D2D1_ELLIPSE {
+    D2D1_ELLIPSE { point: Vector2 { X: x, Y: y }, radiusX: rx, radiusY: ry }
 }
 
-/// Clip the window to a rounded rectangle (square when maximized, like the Mac's full screen).
-fn update_shape(hwnd: HWND) {
-    unsafe {
-        if IsZoomed(hwnd).as_bool() {
-            SetWindowRgn(hwnd, None, true);
-            return;
-        }
-        let mut r = RECT::default();
-        let _ = GetWindowRect(hwnd, &mut r);
-        let d = (2.0 * CORNER_DIP * GetDpiForWindow(hwnd) as f32 / 96.0).round() as i32;
-        let rgn = CreateRoundRectRgn(0, 0, r.right - r.left + 1, r.bottom - r.top + 1, d, d);
-        // The window owns the region from here on.
-        SetWindowRgn(hwnd, Some(rgn), true);
+/// The window outline: a rounded capsule whose long edges ripple gently, like poured glass.
+/// `inset` shrinks it (for inner highlights); `wobble` is the ripple height in pixels.
+unsafe fn blob_path(factory: &ID2D1Factory1, l: &Layout, inset: f32, wobble: f32) -> Option<ID2D1PathGeometry1> {
+    let path = factory.CreatePathGeometry().ok()?;
+    let sink = path.Open().ok()?;
+    let pts = crate::layout::outline(l, inset, wobble, 480);
+    sink.BeginFigure(Vector2 { X: pts[0].0, Y: pts[0].1 }, D2D1_FIGURE_BEGIN_FILLED);
+    for &(x, y) in &pts[1..] {
+        sink.AddLine(Vector2 { X: x, Y: y });
     }
+    sink.EndFigure(D2D1_FIGURE_END_CLOSED);
+    sink.Close().ok()?;
+    Some(path)
+}
+
+fn ellipse(x: f32, y: f32, r: f32) -> D2D1_ELLIPSE {
+    D2D1_ELLIPSE { point: Vector2 { X: x, Y: y }, radiusX: r, radiusY: r }
 }
 
 fn xy(lparam: LPARAM) -> (f32, f32) {
     ((lparam.0 & 0xFFFF) as u16 as i16 as f32, ((lparam.0 >> 16) & 0xFFFF) as u16 as i16 as f32)
 }
 
-/// Resize edges, the draggable title bar, and our buttons.
+/// Resize edges live in the glow margin; the top strip drags the window.
 unsafe fn hit_test(hwnd: HWND, lparam: LPARAM) -> u32 {
-    const HTCLIENT: u32 = 1;
-    const HTCAPTION: u32 = 2;
     let (sx, sy) = xy(lparam);
     let mut pt = POINT { x: sx as i32, y: sy as i32 };
     let _ = ScreenToClient(hwnd, &mut pt);
     let mut r = RECT::default();
     let _ = GetClientRect(hwnd, &mut r);
     let s = GetDpiForWindow(hwnd) as f32 / 96.0;
-    let (x, y) = (pt.x as f32, pt.y as f32);
-    let (w, h) = (r.right as f32, r.bottom as f32);
-    if !IsZoomed(hwnd).as_bool() {
-        let e = 6.0 * s;
-        let (l, rt, t, b) = (x < e, x >= w - e, y < e, y >= h - e);
-        match (l, rt, t, b) {
-            (true, _, true, _) => return 13,
-            (_, true, true, _) => return 14,
-            (true, _, _, true) => return 16,
-            (_, true, _, true) => return 17,
-            (true, ..) => return 10,
-            (_, true, ..) => return 11,
-            (_, _, true, _) => return 12,
-            (_, _, _, true) => return 15,
-            _ => {}
-        }
+    let layout = Layout::new(r.right as f32, r.bottom as f32, s, IsZoomed(hwnd).as_bool());
+    match layout.hit(pt.x as f32, pt.y as f32) {
+        Hit::Client => 1,
+        Hit::Caption => 2,
+        Hit::Left => 10,
+        Hit::Right => 11,
+        Hit::Top => 12,
+        Hit::TopLeft => 13,
+        Hit::TopRight => 14,
+        Hit::Bottom => 15,
+        Hit::BottomLeft => 16,
+        Hit::BottomRight => 17,
     }
-    if y < TITLE_DIP * s {
-        let in_lights = x >= (LIGHTS[0].0 - LIGHT_R - 2.0) * s && x <= (LIGHTS[2].0 + LIGHT_R + 2.0) * s;
-        return if in_lights { HTCLIENT } else { HTCAPTION };
-    }
-    HTCLIENT
 }
 
-fn pick_font(dwrite: &IDWriteFactory) -> Vec<u16> {
+fn pick_font(dwrite: &IDWriteFactory, names: &[&str]) -> Vec<u16> {
     unsafe {
         let mut coll: Option<IDWriteFontCollection> = None;
         if dwrite.GetSystemFontCollection(&mut coll, false).is_ok() {
             if let Some(coll) = coll {
-                for name in ["Menlo", "Cascadia Mono", "Cascadia Code", "Consolas", "Courier New"] {
+                for name in names {
                     let w = wide(name);
                     let mut index = 0u32;
                     let mut exists = windows::core::BOOL(0);
@@ -1031,7 +1200,7 @@ fn pick_font(dwrite: &IDWriteFactory) -> Vec<u16> {
             }
         }
     }
-    wide("Consolas")
+    wide(names.last().copied().unwrap_or("Consolas"))
 }
 
 unsafe fn clipboard_text() -> Option<String> {
@@ -1068,10 +1237,10 @@ fn rgb(hex: u32) -> D2D1_COLOR_F {
     }
 }
 
-/// Windows Terminal's "Campbell" scheme for the first 16 colors.
+/// A palette tuned for the dark glass: brighter blues and greens than Windows' defaults.
 const PALETTE: [u32; 16] = [
-    0x0C0C0C, 0xC50F1F, 0x13A10E, 0xC19C00, 0x0037DA, 0x881798, 0x3A96DD, 0xCCCCCC, 0x767676, 0xE74856, 0x16C60C,
-    0xF9F1A5, 0x3B78FF, 0xB4009E, 0x61D6D6, 0xF2F2F2,
+    0x1B1E26, 0xFF5C57, 0x5AF78E, 0xF3F99D, 0x57C7FF, 0xFF6AC1, 0x9AEDFE, 0xD7DBE3, 0x686F7D, 0xFF7A75, 0x7CFFA6,
+    0xFFFFB0, 0x7FD3FF, 0xFF8AD0, 0xB8F4FF, 0xFFFFFF,
 ];
 
 fn indexed(i: u8) -> D2D1_COLOR_F {
@@ -1089,23 +1258,19 @@ fn indexed(i: u8) -> D2D1_COLOR_F {
     }
 }
 
-fn colors(a: &Attrs, default_fg: D2D1_COLOR_F, default_bg: D2D1_COLOR_F) -> (D2D1_COLOR_F, D2D1_COLOR_F) {
-    let resolve = |c: Color, default: D2D1_COLOR_F, bright: bool| match c {
-        Color::Default => default,
-        Color::Indexed(i) if bright && i < 8 => indexed(i + 8),
-        Color::Indexed(i) => indexed(i),
-        Color::Rgb(r, g, b) => rgb((r as u32) << 16 | (g as u32) << 8 | b as u32),
+/// Foreground, and a background only when the cell has one (default background is the glass).
+fn colors(a: &Attrs, default_fg: D2D1_COLOR_F) -> (D2D1_COLOR_F, Option<D2D1_COLOR_F>) {
+    let resolve = |c: Color, bright: bool| match c {
+        Color::Default => None,
+        Color::Indexed(i) if bright && i < 8 => Some(indexed(i + 8)),
+        Color::Indexed(i) => Some(indexed(i)),
+        Color::Rgb(r, g, b) => Some(rgb((r as u32) << 16 | (g as u32) << 8 | b as u32)),
     };
-    let fg = resolve(a.fg, default_fg, a.bold);
-    let bg = resolve(a.bg, default_bg, false);
+    let fg = resolve(a.fg, a.bold);
+    let bg = resolve(a.bg, false);
     if a.inverse {
-        (bg, fg)
+        (bg.unwrap_or(rgb(theme::BODY)), Some(fg.unwrap_or(default_fg)))
     } else {
-        (fg, bg)
+        (fg.unwrap_or(default_fg), bg)
     }
-}
-
-#[allow(dead_code)]
-fn _assert_interfaces(t: &ID2D1HwndRenderTarget) {
-    let _ = t.cast::<windows::Win32::Graphics::Direct2D::ID2D1RenderTarget>();
 }
