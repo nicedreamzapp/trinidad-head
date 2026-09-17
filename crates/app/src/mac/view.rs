@@ -866,6 +866,14 @@ impl TermView {
     }
 
     fn on_scroll(&self, event: &NSEvent) {
+        // Wheel deltas round to zero on slow clicks; any movement counts as whole notches.
+        fn notch(delta: f64) -> f64 {
+            if delta == 0.0 {
+                0.0
+            } else {
+                delta.signum() * delta.abs().round().max(1.0)
+            }
+        }
         let shift = event.modifierFlags().contains(NSEventModifierFlags::Shift);
         let (mode, _) = self.mouse_mode();
         let (x, y) = self.point(event);
@@ -881,7 +889,8 @@ impl TermView {
                     st.scroll_accum -= whole;
                     whole
                 } else {
-                    delta.round()
+                    // A mouse wheel click can report as little as 0.1; still one notch.
+                    notch(delta)
                 }
             };
             let button = if steps > 0.0 { 64 } else { 65 };
@@ -898,7 +907,7 @@ impl TermView {
             st.scroll_accum -= whole;
             whole
         } else {
-            (delta * 3.0).round()
+            notch(delta) * 3.0
         };
         if lines == 0.0 {
             return;
