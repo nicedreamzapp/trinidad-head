@@ -1365,6 +1365,17 @@ impl App {
                     }
                     let (cr, cc) = term.cursor();
                     out.push_str(&format!("--\ncursor {cr},{cc} size {}x{} title {:?}\n", term.cols(), term.rows(), term.title));
+                    // Background colors on screen, to check what programs actually paint.
+                    let mut bgs: Vec<String> = Vec::new();
+                    for r in 0..term.rows() {
+                        for c in term.line(r, 0) {
+                            let name = format!("{:?}", c.attrs.bg);
+                            if !bgs.contains(&name) {
+                                bgs.push(name);
+                            }
+                        }
+                    }
+                    out.push_str(&format!("backgrounds {}\n", bgs.join(" ")));
                     if let Some((p50, p95, n)) = self.meter.stats() {
                         out.push_str(&format!("typing delay median {p50:.1} ms, p95 {p95:.1} ms over {n} keys\n"));
                     }
