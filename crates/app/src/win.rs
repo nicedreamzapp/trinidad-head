@@ -58,7 +58,7 @@ use crate::gfx::Gfx;
 use windows::core::Interface;
 use windows::Win32::Graphics::Direct2D::Common::{D2D1_FIGURE_BEGIN_FILLED, D2D1_FIGURE_END_CLOSED};
 use windows::Win32::Graphics::Direct2D::{ID2D1Factory1, ID2D1Geometry, ID2D1LinearGradientBrush, ID2D1PathGeometry1};
-use crate::layout::{Button, Hit, Layout};
+use crate::layout::{Button, Hit, Layout, GLASS};
 use crate::theme::{self, GLOWS};
 
 const WM_TERM_OUTPUT: u32 = WM_APP + 1;
@@ -80,7 +80,12 @@ struct ChromeCache {
     key: (u32, u32, usize, bool),
     bloom: ID2D1Effect,
     shape: ID2D1Geometry,
-    inner: ID2D1Geometry,
+    /// The sunken window inside the glass, a hairline just outside it, the pale edge just
+    /// inside the rim, and the path the top sheen follows.
+    window: ID2D1Geometry,
+    window_edge: ID2D1Geometry,
+    edge: ID2D1Geometry,
+    sheen: ID2D1Geometry,
     rim: ID2D1LinearGradientBrush,
 }
 
@@ -1137,21 +1142,26 @@ impl App {
         let factory = g.factory.clone();
         let s = l.scale;
         unsafe {
-            let wobble = if l.maximized { 0.0 } else { 5.0 * s };
-            let shape = blob_path(&factory, &l, 0.0, wobble)?;
-            let inner = blob_path(&factory, &l, 5.0 * s, wobble)?;
+            // Look 06 is smooth glass, not the old rippled outline.
+            let glass = GLASS * s;
+            let shape = blob_path(&factory, &l, 0.0, 0.0)?;
+            let window = blob_path(&factory, &l, glass, 0.0)?;
+            let window_edge = blob_path(&factory, &l, glass - 0.5 * s, 0.0)?;
+            let edge = blob_path(&factory, &l, 1.6 * s, 0.0)?;
+            let sheen = blob_path(&factory, &l, glass * 0.45, 0.0)?;
             let rim = self.rim_brush(1.0)?;
 
-            // Bloom: the rim drawn thick, plus the pool of light under the window, then blurred.
+            // Faint glow: the rim drawn thick plus a soft pool of light under the window, then
+            // blurred. Small enough to fade out inside the 26 px margin.
             let list = dc.CreateCommandList().ok()?;
             let old = dc.GetTarget().ok();
             dc.SetTarget(&list);
             dc.BeginDraw();
             if !l.maximized {
-                dc.DrawGeometry(&shape, &rim, 10.0 * s, None);
-                rim.SetOpacity(0.55);
+                dc.DrawGeometry(&shape, &rim, 7.0 * s, None);
+                rim.SetOpacity(0.35);
                 dc.FillEllipse(
-                    &ellipse_xy(l.body.cx(), l.body.b + 14.0 * s, l.body.w() * 0.34, 7.0 * s),
+                    &ellipse_xy(l.body.cx(), l.body.b + 10.0 * s, l.body.w() * 0.36, 5.0 * s),
                     &rim,
                 );
                 rim.SetOpacity(1.0);
@@ -1162,7 +1172,7 @@ impl App {
 
             let blur = dc.CreateEffect(&CLSID_D2D1GaussianBlur).ok()?;
             blur.SetInput(0, &list, true);
-            let dev: f32 = 11.0 * s;
+            let dev: f32 = 5.0 * s;
             let _ = blur.SetValue(
                 D2D1_GAUSSIANBLUR_PROP_STANDARD_DEVIATION.0 as u32,
                 D2D1_PROPERTY_TYPE_FLOAT,
@@ -1177,7 +1187,10 @@ impl App {
                 key,
                 bloom: blur,
                 shape: shape.cast().ok()?,
-                inner: inner.cast().ok()?,
+                window: window.cast().ok()?,
+                window_edge: window_edge.cast().ok()?,
+                edge: edge.cast().ok()?,
+                sheen: sheen.cast().ok()?,
                 rim,
             };
             self.glow_cache = Some(cache.clone());
@@ -1185,19 +1198,21 @@ impl App {
         }
     }
 
-    /// Diagonal neon sweep through the theme's four colors.
+    /// Look 06's rim: the glow's light color hot at both ends, dimmer across the middle.
     fn rim_brush(&self, strength: f32) -> Option<ID2D1LinearGradientBrush> {
         let glow = GLOWS[self.glow];
-        let c = |hex: u32| D2D1_COLOR_F { a: strength, ..rgb(hex) };
-        let [c0, c1, c2, c3] = glow.colors;
+        let c = |hex: u32, a: f32| D2D1_COLOR_F { a: strength * a, ..rgb(hex) };
+        let [c0, c1, _, c3] = glow.colors;
         let stops = [
-            D2D1_GRADIENT_STOP { position: 0.0, color: c(c0) },
-            D2D1_GRADIENT_STOP { position: 0.30, color: c(c1) },
-            D2D1_GRADIENT_STOP { position: 0.62, color: c(c2) },
-            D2D1_GRADIENT_STOP { position: 1.0, color: c(c3) },
+            D2D1_GRADIENT_STOP { position: 0.0, color: c(c0, 1.0) },
+            D2D1_GRADIENT_STOP { position: 0.12, color: c(c1, 1.0) },
+            D2D1_GRADIENT_STOP { position: 0.36, color: c(c1, 0.45) },
+            D2D1_GRADIENT_STOP { position: 0.64, color: c(c1, 0.45) },
+            D2D1_GRADIENT_STOP { position: 0.88, color: c(c3, 1.0) },
+            D2D1_GRADIENT_STOP { position: 1.0, color: c(c0, 1.0) },
         ];
         let b = self.layout.body;
-        self.linear_brush(&stops, (b.l, b.t), (b.r, b.b))
+        self.linear_brush(&stops, (b.l, 0.0), (b.r, 0.0))
     }
 
     fn linear_brush(&self, stops: &[D2D1_GRADIENT_STOP], from: (f32, f32), to: (f32, f32)) -> Option<ID2D1LinearGradientBrush> {
@@ -1244,55 +1259,79 @@ impl App {
             dc.BeginDraw();
             dc.Clear(Some(&D2D1_COLOR_F { r: 0.0, g: 0.0, b: 0.0, a: 0.0 }));
 
-            // 1. Bloom and the light pool under the window.
+            // Look 06 (Matt, 2026-09-17): thick black glass, a thin neon rim that burns brightest
+            // at the left and right ends, a faint glow, and a glossy sheen along the top.
+            let strength = if self.focused { 1.0 } else { 0.5 };
+            // 1. Faint glow and the light pool under the window.
             if let Some(c) = &chrome {
                 if !l.maximized {
                     if let Ok(img) = c.bloom.GetOutput() {
-                        let passes = if self.focused { 3 } else { 1 };
-                        for _ in 0..passes {
-                            dc.DrawImage(&img, None, None, D2D1_INTERPOLATION_MODE_LINEAR, D2D1_COMPOSITE_MODE_SOURCE_OVER);
-                        }
+                        let _ = dc.PushLayer(
+                            &windows::Win32::Graphics::Direct2D::D2D1_LAYER_PARAMETERS1 {
+                                contentBounds: D2D_RECT_F { left: -1e6, top: -1e6, right: 1e6, bottom: 1e6 },
+                                opacity: 0.2 + 0.25 * strength,
+                                ..Default::default()
+                            },
+                            None,
+                        );
+                        dc.DrawImage(&img, None, None, D2D1_INTERPOLATION_MODE_LINEAR, D2D1_COMPOSITE_MODE_SOURCE_OVER);
+                        dc.PopLayer();
                     }
                 }
             }
 
             if let Some(c) = &chrome {
                 let b = l.body;
-                // 2. Deep glass: dark base, then colored light washing in from two corners
-                //    (half strength since 2026-09-17; Matt wants the body mostly black).
-                brush.SetColor(&D2D1_COLOR_F { a: theme::BODY_OPACITY, ..rgb(theme::BODY) });
-                let _ = dc.FillGeometry(&c.shape, &brush, None);
-                let wash = [
-                    D2D1_GRADIENT_STOP { position: 0.0, color: D2D1_COLOR_F { a: 0.375, ..rgb(theme::TINT_A) } },
-                    D2D1_GRADIENT_STOP { position: 0.45, color: D2D1_COLOR_F { a: 0.0, ..rgb(theme::TINT_A) } },
-                    D2D1_GRADIENT_STOP { position: 0.62, color: D2D1_COLOR_F { a: 0.0, ..rgb(theme::TINT_B) } },
-                    D2D1_GRADIENT_STOP { position: 1.0, color: D2D1_COLOR_F { a: 0.35, ..rgb(theme::TINT_B) } },
-                ];
-                if let Some(w) = self.linear_brush(&wash, (b.l, b.t), (b.r, b.b)) {
+                let glass = GLASS * s;
+                let stop = |p: f32, hex: u32, a: f32| D2D1_GRADIENT_STOP { position: p, color: D2D1_COLOR_F { a, ..rgb(hex) } };
+                // 2. The glass: charcoal at the top fading to black.
+                let body = [stop(0.0, 0x2A2A31, 0.98), stop(0.22, 0x0E0E12, 0.98), stop(0.8, 0x08080B, 0.98), stop(1.0, 0x16110D, 0.98)];
+                if let Some(w) = self.linear_brush(&body, (0.0, b.t), (0.0, b.b)) {
                     let _ = dc.FillGeometry(&c.shape, &w, None);
                 }
-
-                // 3. The glass tube: a wide soft band, a brighter band, then a hot core line.
-                let strength = if self.focused { 1.0 } else { 0.5 };
-                c.rim.SetOpacity(0.16 * strength);
-                let _ = dc.DrawGeometry(&c.shape, &c.rim, 22.0 * s, None);
-                c.rim.SetOpacity(0.5 * strength);
-                let _ = dc.DrawGeometry(&c.shape, &c.rim, 7.0 * s, None);
-                c.rim.SetOpacity(1.0 * strength);
-                let _ = dc.DrawGeometry(&c.shape, &c.rim, 2.0 * s, None);
-                c.rim.SetOpacity(1.0);
-
-                // 4. Specular highlight: white light along the upper inside edge.
-                let spec = [
-                    D2D1_GRADIENT_STOP { position: 0.0, color: D2D1_COLOR_F { a: 0.85, ..rgb(0xFFFFFF) } },
-                    D2D1_GRADIENT_STOP { position: 1.0, color: D2D1_COLOR_F { a: 0.0, ..rgb(0xFFFFFF) } },
+                // Colored light caught inside the glass at both ends.
+                c.rim.SetOpacity(0.22 * strength);
+                let _ = dc.DrawGeometry(&c.shape, &c.rim, glass * 2.4, None);
+                // The sunken window.
+                brush.SetColor(&D2D1_COLOR_F { a: theme::BODY_OPACITY, ..rgb(theme::BODY) });
+                let _ = dc.FillGeometry(&c.window, &brush, None);
+                let wash = [
+                    stop(0.0, theme::TINT_A, 0.2),
+                    stop(0.45, theme::TINT_A, 0.0),
+                    stop(0.62, theme::TINT_B, 0.0),
+                    stop(1.0, theme::TINT_B, 0.18),
                 ];
-                if let Some(w) = self.linear_brush(&spec, (b.l, b.t), (b.l + b.w() * 0.25, b.t + b.h() * 0.45)) {
-                    let _ = dc.DrawGeometry(&c.inner, &w, 1.6 * s, None);
+                if let Some(w) = self.linear_brush(&wash, (b.l, b.t), (b.r, b.b)) {
+                    let _ = dc.FillGeometry(&c.window, &w, None);
                 }
-                if let Some(w) = self.linear_brush(&spec, (b.r, b.b), (b.r - b.w() * 0.2, b.b - b.h() * 0.4)) {
-                    w.SetOpacity(0.45);
-                    let _ = dc.DrawGeometry(&c.inner, &w, 1.2 * s, None);
+                // Its edge sits in shadow, with a hairline of glass light.
+                for (w, a) in [(5.0, 0.55), (2.0, 0.8)] {
+                    brush.SetColor(&D2D1_COLOR_F { a, ..rgb(0x000000) });
+                    let _ = dc.DrawGeometry(&c.window, &brush, w * s, None);
+                }
+                brush.SetColor(&D2D1_COLOR_F { a: 0.07, ..rgb(0xFFFFFF) });
+                let _ = dc.DrawGeometry(&c.window_edge, &brush, 1.0 * s, None);
+
+                // 3. The neon rim: a soft band and a hot core line, then a pale inner hairline.
+                for (w, a) in [(4.5, 0.45), (1.8, 1.0)] {
+                    c.rim.SetOpacity(a * strength);
+                    let _ = dc.DrawGeometry(&c.shape, &c.rim, w * s, None);
+                }
+                c.rim.SetOpacity(1.0);
+                let pale = [stop(0.0, 0xFFE9D2, 0.0), stop(0.5, 0xFFE9D2, 0.55 * strength), stop(1.0, 0xFFE9D2, 0.0)];
+                if let Some(w) = self.linear_brush(&pale, (0.0, b.t), (0.0, b.b)) {
+                    let _ = dc.DrawGeometry(&c.edge, &w, 0.8 * s, None);
+                }
+                // The top of the tube is turned away from the light.
+                let shade = [stop(0.0, 0x000000, 0.5), stop(1.0, 0x000000, 0.0)];
+                if let Some(w) = self.linear_brush(&shade, (0.0, b.t), (0.0, b.t + b.h() * 0.4)) {
+                    let _ = dc.DrawGeometry(&c.shape, &w, 5.0 * s, None);
+                }
+
+                // 4. Gloss: a soft sheen across the top of the glass.
+                let gloss = [stop(0.0, 0xFFFFFF, 0.16), stop(1.0, 0xFFFFFF, 0.0)];
+                if let Some(w) = self.linear_brush(&gloss, (0.0, b.t), (0.0, b.t + l.radius * 0.9)) {
+                    let _ = dc.DrawGeometry(&c.sheen, &w, glass * 0.5, None);
                 }
             }
 

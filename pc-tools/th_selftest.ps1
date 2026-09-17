@@ -42,8 +42,9 @@ $wr0 = New-Object TW+R; [void][TW]::GetWindowRect($hw, [ref]$wr0)
 Start-Sleep -m 500
 $s = [TW]::GetDpiForWindow($hw) / 96.0
 $r = New-Object TW+R; [void][TW]::GetClientRect($hw, [ref]$r)
-# Layout (matches layout.rs): margin 46, text starts at sidebar.r + 18 and body.t + 56.
-$tl = [int]((46 + 16 + 40 + 18) * $s); $tt = [int]((46 + 56) * $s)
+# Layout (matches layout.rs): margin MARGIN (26), floor FLOOR (40), text starts at sidebar.r + 18 and body.t + 56.
+$M = 26; $F = 40
+$tl = [int](($M + 16 + 40 + 18) * $s); $tt = [int](($M + 56) * $s)
 $ch = 15 * 1.5 * $s   # approximate row height, only used to aim at a row
 $WM_LD=0x201; $WM_LU=0x202; $WM_MV=0x200; $WM_RU=0x205; $WM_KD=0x100; $WM_CH=0x102; $WM_WH=0x20A
 
@@ -97,7 +98,7 @@ for ($k = 0; $k -lt 20 -and $row -lt 0; $k++) {
   for ($i = 0; $i -lt $dump.Count; $i++) { if ($dump[$i] -like "SELECT-ME*") { $row = $i; break } }
   if ($row -lt 0) { [void][TW]::PostMessage($hw, 0x000F, [IntPtr]0, [IntPtr]0); Start-Sleep -m 300 }
 }
-$cellH = ($r.B - (46 + 66) * $s - 56 * $s - 28 * $s) / ([int]([regex]::Match(($dump | Select-String "size").Line, 'x(\d+)').Groups[1].Value))
+$cellH = ($r.B - ($M + $F) * $s - 56 * $s - 28 * $s) / ([int]([regex]::Match(($dump | Select-String "size").Line, 'x(\d+)').Groups[1].Value))
 $sy = [int]($tt + ($row + 0.5) * $cellH)
 [void][TW]::PostMessage($hw, $WM_LD, [IntPtr]1, [TW]::L($tl + 2, $sy)); Start-Sleep -m 120
 [void][TW]::PostMessage($hw, $WM_MV, [IntPtr]1, [TW]::L($tl + 300 * $s, $sy)); Start-Sleep -m 120
@@ -130,21 +131,21 @@ Check "resize changes terminal size" ($before -ne $after) "$before -> $after"
 
 # Buttons (light centres from layout.rs: pill at body.l+58, y body.t+14, lights at +16/+37/+58, centre y +13).
 [void][TW]::GetClientRect($hw, [ref]$r)
-$ly = [int]((46 + 14 + 13) * $s)
+$ly = [int](($M + 14 + 13) * $s)
 function Click($cx) { [void][TW]::PostMessage($hw, $WM_LD, [IntPtr]1, [TW]::L($cx, $ly)); Start-Sleep -m 100; [void][TW]::PostMessage($hw, $WM_LU, [IntPtr]0, [TW]::L($cx, $ly)); Start-Sleep -m 700 }
-Click ([int]((46 + 58 + 58) * $s)); Check "green zooms" ([TW]::IsZoomed($hw)) ""
+Click ([int](($M + 58 + 58) * $s)); Check "green zooms" ([TW]::IsZoomed($hw)) ""
 # Zoomed: no margin, so the lights move; restore directly.
 [void][TW]::ShowWindow($hw, 9); Start-Sleep -m 700
 Check "restore from zoom" (-not [TW]::IsZoomed($hw)) ""
-Click ([int]((46 + 58 + 37) * $s)); Check "yellow minimizes" ([TW]::IsIconic($hw)) ""
+Click ([int](($M + 58 + 37) * $s)); Check "yellow minimizes" ([TW]::IsIconic($hw)) ""
 [void][TW]::ShowWindow($hw, 9); Start-Sleep -m 700
 # Glow button: the only sidebar slot (x = body.l+16+20, y = sidebar top + 6 + 20).
 $glowReg = Get-Content (Join-Path $regDir $p.Id) -Raw
 [void][TW]::GetClientRect($hw, [ref]$r)
-$bodyH = $r.B - (46 + 66) * $s
+$bodyH = $r.B - ($M + $F) * $s
 $sideH = [Math]::Max(40 * $s, [Math]::Min(52 * $s, $bodyH - 90 * $s))
-$sideT = 46 * $s + $bodyH / 2 - $sideH / 2 + 14 * $s
-$gx = [int]((46 + 16 + 20) * $s); $gy = [int]($sideT + (6 + 20) * $s)
+$sideT = $M * $s + $bodyH / 2 - $sideH / 2 + 14 * $s
+$gx = [int](($M + 16 + 20) * $s); $gy = [int]($sideT + (6 + 20) * $s)
 [void][TW]::PostMessage($hw, $WM_LD, [IntPtr]1, [TW]::L($gx, $gy)); Start-Sleep -m 100; [void][TW]::PostMessage($hw, $WM_LU, [IntPtr]0, [TW]::L($gx, $gy)); Start-Sleep -m 500
 $regFile = Join-Path $regDir $p.Id
 $glowAfter = Get-Content $regFile -Raw
@@ -153,7 +154,7 @@ for ($i = 0; $i -lt 3; $i++) { [void][TW]::PostMessage($hw, $WM_LD, [IntPtr]1, [
 $glowBack = if (Test-Path $settings) { Get-Content $settings -Raw } else { "" }
 Check "default glow setting untouched" ($glowBack -eq $glowBefore) ""
 # Red closes.
-Click ([int]((46 + 58 + 16) * $s)); Start-Sleep 1
+Click ([int](($M + 58 + 16) * $s)); Start-Sleep 1
 Check "red closes the window" ($p.HasExited) ""
 if (-not $p.HasExited) { Stop-Process -Id $p.Id -Force }
 [System.Windows.Forms.Clipboard]::SetText($(if ($saved) { $saved } else { " " }))
