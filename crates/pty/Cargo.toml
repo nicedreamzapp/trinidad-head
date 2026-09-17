@@ -1,0 +1,8 @@
+[package]
+name = "pty"
+description = "Runs shells behind a pseudo console (Windows ConPTY today)."
+version.workspace = true
+edition.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows.workspace = true

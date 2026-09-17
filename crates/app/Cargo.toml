@@ -1,0 +1,17 @@
+[package]
+name = "app"
+description = "The terminal window."
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "our-terminal"
+path = "src/main.rs"
+
+[dependencies]
+core-vt = { path = "../core-vt" }
+pty = { path = "../pty" }
+
+[target.'cfg(windows)'.dependencies]
+windows.workspace = true
+windows-core.workspace = true

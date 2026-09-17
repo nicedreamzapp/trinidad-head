@@ -1,0 +1,8 @@
+[package]
+name = "core-vt"
+description = "Terminal output parser and screen state. No UI, no OS code."
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+unicode-width = "0.2"
