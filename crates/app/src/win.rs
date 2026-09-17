@@ -1083,15 +1083,16 @@ impl App {
                 let t = top + start_row as f32 * ch;
                 let b = top + row as f32 * ch;
                 let r = ((b - t) / 2.0).min(16.0 * s);
-                brush.SetColor(&rgb((ur as u32) << 16 | (ug as u32) << 8 | ub as u32));
-                dc.FillRoundedRectangle(
-                    &D2D1_ROUNDED_RECT {
-                        rect: D2D_RECT_F { left: left + span.0 as f32 * cw - 4.0 * s, top: t + 1.0, right: left + span.1 as f32 * cw + 4.0 * s, bottom: b - 1.0 },
-                        radiusX: r,
-                        radiusY: r,
-                    },
-                    &brush,
-                );
+                let pill = D2D1_ROUNDED_RECT {
+                    rect: D2D_RECT_F { left: left + span.0 as f32 * cw - 4.0 * s, top: t + 1.0, right: left + span.1 as f32 * cw + 4.0 * s, bottom: b - 1.0 },
+                    radiusX: r,
+                    radiusY: r,
+                };
+                brush.SetColor(&D2D1_COLOR_F { a: theme::USER_BAR_ALPHA, ..rgb((ur as u32) << 16 | (ug as u32) << 8 | ub as u32) });
+                dc.FillRoundedRectangle(&pill, &brush);
+                // A faint glassy edge so the pill still reads as a shape.
+                brush.SetColor(&D2D1_COLOR_F { a: 0.35, ..rgb((ur as u32) << 16 | (ug as u32) << 8 | ub as u32) });
+                dc.DrawRoundedRectangle(&pill, &brush, 1.0, None);
             }
             for row in 0..term.rows() {
                 let line = term.line(row, offset);
