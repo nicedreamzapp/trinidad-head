@@ -96,7 +96,11 @@ fn prune_sockets() {
     for e in dir.flatten() {
         let name = e.file_name().to_string_lossy().into_owned();
         if let Some(tok) = name.strip_suffix(".sock") {
-            if !live.iter().any(|l| l == tok) {
+            // A window that is just starting binds its socket a moment before it registers.
+            let young = e.metadata().and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok())
+                .map(|age| age.as_secs() < 60)
+                .unwrap_or(true);
+            if !young && !live.iter().any(|l| l == tok) {
                 let _ = std::fs::remove_file(e.path());
             }
         }
