@@ -1,0 +1,6 @@
+#!/bin/bash
+# th-self-id — print this Trinidad Head window's id ("th:<token>"); exit 1 elsewhere.
+# The id works with th-type (and with ghostty-type, which hands th: ids over).
+[ "${TERM_PROGRAM:-}" = "TrinidadHead" ] && [ -n "${TRINIDAD_HEAD_TOKEN:-}" ] || exit 1
+[ -S "$HOME/.trinidad-head/$TRINIDAD_HEAD_TOKEN.sock" ] || exit 1
+echo "th:$TRINIDAD_HEAD_TOKEN"

@@ -1,0 +1,15 @@
+#!/bin/bash
+# th-open <file.command | file.ghostty>... — open each in its own Trinidad Head window.
+#   .command  runs in a login shell, then the window closes (like Terminal did)
+#   .ghostty  its first line is typed into a login shell that stays open
+# Prints the new window's id (th:<token>) for each file. Used by Ghostty Run.app.
+APP="$HOME/Applications/Trinidad Head.app"
+for f in "$@"; do
+    case "$f" in
+    *.ghostty) line="$(head -n 1 "$f")" ;;
+    *) q=$(printf '%q' "$f"); line="$q; exit" ;;
+    esac
+    token="$(/usr/bin/uuidgen)"
+    /usr/bin/open -n -a "$APP" --env TRINIDAD_HEAD_TOKEN="$token" --env TRINIDAD_HEAD_INPUT="clear; $line"
+    echo "th:$token"
+done

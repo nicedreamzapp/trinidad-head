@@ -40,6 +40,13 @@ impl Pty {
         if !command_line.trim().is_empty() {
             cmd.arg("-c").arg(command_line);
         }
+        // Claude Code session markers must never leak into a new window: a claude started
+        // there would think it's a child session and stop saving its transcript.
+        for (k, _) in std::env::vars_os() {
+            if k.to_string_lossy().starts_with("CLAUDE") {
+                cmd.env_remove(&k);
+            }
+        }
         let home = std::env::var("HOME").unwrap_or_else(|_| "/".into());
         cmd.current_dir(cwd.unwrap_or(&home))
             .env("TERM", "xterm-256color")

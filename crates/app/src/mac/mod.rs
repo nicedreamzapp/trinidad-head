@@ -1,6 +1,7 @@
 //! The macOS window: a borderless, see-through NSWindow whose every pixel (glass body, neon
 //! rim, window buttons, sidebar) is drawn by us, matching the Windows version.
 
+mod control;
 mod keys;
 mod paint;
 mod selftest;
@@ -31,6 +32,12 @@ pub(crate) struct Shared {
 }
 
 static REDRAW_QUEUED: AtomicBool = AtomicBool::new(false);
+static TOKEN: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+/// This window's control token.
+pub(crate) fn window_token() -> &'static str {
+    TOKEN.get().map(String::as_str).unwrap_or("")
+}
 
 define_class!(
     // A borderless window can't normally take keyboard focus; this one can.
@@ -81,6 +88,7 @@ define_class!(
         #[unsafe(method(applicationWillTerminate:))]
         fn will_terminate(&self, _note: &objc2_foundation::NSNotification) {
             selftest::on_terminate();
+            control::cleanup(window_token());
         }
     }
 );
@@ -154,6 +162,16 @@ pub fn run() {
     let args: Vec<String> = std::env::args().skip(1).filter(|a| !a.starts_with("-psn_")).collect();
     let command = args.join(" ");
 
+    // The window's control token, handed to the shell so tools inside can find this window.
+    let token = control::token();
+    let _ = TOKEN.set(token.clone());
+    // A line to type into the shell once it starts (Ghostty Run's .ghostty/.command files).
+    let initial_input = std::env::var("TRINIDAD_HEAD_INPUT").ok();
+    unsafe {
+        std::env::set_var("TRINIDAD_HEAD_TOKEN", &token);
+        std::env::remove_var("TRINIDAD_HEAD_INPUT");
+    }
+
     let pty = match Pty::spawn(&command, None, 80, 24) {
         Ok(p) => p,
         Err(e) => {
@@ -163,6 +181,11 @@ pub fn run() {
     };
     let shared = Arc::new(Mutex::new(Shared { term: Terminal::new(80, 24), last_output: None }));
     let pty = Arc::new(Mutex::new(pty));
+    if let Some(line) = initial_input.filter(|l| !l.is_empty()) {
+        // The shell reads this once it is ready, like typing ahead.
+        let _ = pty.lock().unwrap().write(format!("{line}\r").as_bytes());
+    }
+    control::listen(&token, shared.clone(), pty.clone());
 
     let frame = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(1080.0, 700.0));
     let style = NSWindowStyleMask::Borderless | NSWindowStyleMask::Resizable | NSWindowStyleMask::Miniaturizable;

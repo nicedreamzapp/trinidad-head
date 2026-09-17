@@ -40,7 +40,6 @@ pub struct ViewState {
     cell_w: f64,
     cell_h: f64,
     glow: usize,
-    settings_path: Option<std::path::PathBuf>,
     scroll_offset: usize,
     scroll_accum: f64,
     hover: Option<Button>,
@@ -314,11 +313,15 @@ impl TermView {
             .as_ref()
             .and_then(|d| std::fs::OpenOptions::new().create(true).append(true).open(d.join("latency.log")).ok());
         let settings_path = support.as_ref().map(|d| d.join("settings.txt"));
-        let glow = settings_path
+        // The saved theme is the starting point; each open window then takes a color no other
+        // open window is using.
+        let default_glow = settings_path
             .as_ref()
             .and_then(|p| std::fs::read_to_string(p).ok())
             .map(|t| theme::parse_settings(&t))
             .unwrap_or(0);
+        let glow = theme::pick_glow(default_glow, &super::control::glows_in_use());
+        super::control::register(glow, super::window_token());
         let user_bar = std::env::var("HOME")
             .ok()
             .and_then(|h| std::fs::read_to_string(std::path::Path::new(&h).join(".claude/themes/trinidad-head.json")).ok())
@@ -345,7 +348,6 @@ impl TermView {
             cell_w,
             cell_h,
             glow,
-            settings_path,
             scroll_offset: 0,
             scroll_accum: 0.0,
             hover: None,
@@ -790,11 +792,10 @@ impl TermView {
                 }
             }
             Button::Glow => {
+                // Changes this window only; the saved default for new windows stays put.
                 let mut st = self.ivars().borrow_mut();
                 st.glow = (st.glow + 1) % GLOWS.len();
-                if let Some(p) = &st.settings_path {
-                    let _ = std::fs::write(p, theme::settings_text(st.glow));
-                }
+                super::control::register(st.glow, super::window_token());
                 drop(st);
                 self.setNeedsDisplay(true);
             }

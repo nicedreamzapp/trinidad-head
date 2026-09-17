@@ -1,0 +1,14 @@
+#!/usr/bin/python3
+"""th-alive <token> — prints yes if that Trinidad Head window is open, else no."""
+import os, socket, sys
+tok = sys.argv[1] if len(sys.argv) > 1 else ""
+tok = tok[3:] if tok.startswith("th:") else tok
+try:
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    s.settimeout(2)
+    s.connect(os.path.expanduser(f"~/.trinidad-head/{tok}.sock"))
+    s.sendall(b"ping")
+    s.shutdown(socket.SHUT_WR)
+    print("yes" if s.recv(16) == b"ok" else "no")
+except OSError:
+    print("no")

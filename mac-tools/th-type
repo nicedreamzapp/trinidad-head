@@ -1,0 +1,49 @@
+#!/usr/bin/python3
+"""th-type [--escape-first] [--no-enter] <token> <text>
+
+Type text into one Trinidad Head window (as if pasted), then press Return. Works with the
+window in the background and never touches the keyboard focus or other apps. Prints "ok",
+or "missing" (exit 2) when that window is gone.
+"""
+import os, socket, sys, time
+
+args = sys.argv[1:]
+escape = "--escape-first" in args
+enter = "--no-enter" not in args
+args = [a for a in args if a not in ("--escape-first", "--no-enter")]
+if len(args) != 2:
+    print(__doc__.strip(), file=sys.stderr)
+    sys.exit(2)
+token, text = args
+if token.startswith("th:"):
+    token = token[3:]
+sock_path = os.path.expanduser(f"~/.trinidad-head/{token}.sock")
+
+
+def send(cmd):
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    s.settimeout(5)
+    s.connect(sock_path)
+    s.sendall(cmd.encode())
+    s.shutdown(socket.SHUT_WR)
+    reply = s.recv(4096).decode(errors="replace")
+    s.close()
+    return reply
+
+
+try:
+    if escape:
+        send("key escape")
+        time.sleep(0.12)
+    if text:
+        r = send("type " + text)
+        if r != "ok":
+            print(r)
+            sys.exit(1)
+    if enter:
+        time.sleep(0.3)
+        send("key enter")
+except (FileNotFoundError, ConnectionRefusedError):
+    print("missing")
+    sys.exit(2)
+print("ok")

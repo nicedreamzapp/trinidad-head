@@ -27,7 +27,7 @@ use objc2_foundation::{NSNotFound, NSPoint, NSRange, NSRect, NSSize, NSString, N
 
 use super::{THWindow, TermView};
 use crate::layout::{Button, Hit};
-use crate::theme::{self, GLOWS};
+use crate::theme::GLOWS;
 
 /// A line to write if the app quits while a close/quit check is armed.
 static ON_QUIT: Mutex<Option<String>> = Mutex::new(None);
@@ -483,13 +483,23 @@ fn full_steps() -> Vec<Step> {
     // 4. Sidebar: the glow button cycles themes and saves the choice; the folder button opens Finder.
     s.push(act(0.4, |c| {
         let want = (c.glow0.get() + 1) % GLOWS.len();
-        let saved = Ctx::settings_path().and_then(|p| std::fs::read_to_string(p).ok()).unwrap_or_default();
+        let saved = Ctx::settings_path().and_then(|p| std::fs::read_to_string(p).ok());
         c.check(
             "glow button switches the color theme",
             c.view.glow() == want,
             format!("theme {} (wanted {want})", c.view.glow()),
         );
-        c.check("glow choice is saved", theme::parse_settings(&saved) == want, format!("settings.txt says {saved:?}"));
+        let reg = std::env::var("HOME")
+            .map(|h| std::path::PathBuf::from(h).join(".trinidad-head/windows").join(std::process::id().to_string()))
+            .ok()
+            .and_then(|p| std::fs::read_to_string(p).ok())
+            .unwrap_or_default();
+        c.check("glow button updates this window's entry", reg.contains(&format!("glow={want}\n")), format!("registry {reg:?}"));
+        c.check(
+            "glow button leaves the saved default alone",
+            saved == c.settings.borrow().clone().flatten(),
+            format!("settings.txt now {saved:?}"),
+        );
         for _ in 1..GLOWS.len() {
             c.click_button(Button::Glow);
         }
