@@ -30,10 +30,10 @@ pub const TINT_B: u32 = 0x3A1450;
 pub const TEXT: u32 = 0xD7DBE3;
 
 /// Claude Code's "your message" bar. The PC's Claude theme (~/.claude/themes/trinidad-head.json)
-/// paints it this exact color; cells on it get mint green (8BF5B0), bold, taller text on a see-through pill (alpha .26) so Matt's own
+/// paints it this exact color; cells on it get soft green (6FC98E), bold, taller text on a see-through pill (alpha .26) so Matt's own
 /// prompts stand out when scrolling back (2026-09-17, his pick: sample 8).
 pub const USER_BAR: (u8, u8, u8) = (0xC4, 0xD6, 0xE6);
-pub const USER_TEXT: u32 = 0x8BF5B0;
+pub const USER_TEXT: u32 = 0x6FC98E;
 /// The pill is see-through glass tinted with the bar color (Matt: "too white, more clear").
 pub const USER_BAR_ALPHA: f32 = 0.26;
 /// How much taller Matt's prompt text is drawn (width stays on the grid).
