@@ -17,13 +17,20 @@ mod layout;
 mod theme;
 #[cfg(windows)]
 mod win;
+#[cfg(target_os = "macos")]
+mod mac;
 
 #[cfg(windows)]
 fn main() {
     win::run();
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
 fn main() {
-    eprintln!("our-terminal: only the Windows window exists so far");
+    mac::run();
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
+fn main() {
+    eprintln!("trinidad-head: there is no window for this OS yet");
 }
