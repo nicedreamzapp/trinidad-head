@@ -1585,9 +1585,17 @@ fn colors(a: &Attrs, default_fg: [f64; 4]) -> ([f64; 4], Option<[f64; 4]>) {
     if a.inverse {
         (bg.unwrap_or(rgba(theme::BODY, 1.0)), Some(fg.unwrap_or(default_fg)))
     } else {
-        (fg.unwrap_or(default_fg), bg)
+        (faint(fg.unwrap_or(default_fg), a.dim), bg)
     }
 }
+
+/// SGR 2 text is drawn at a third of its brightness, so Claude Code's ghost
+/// suggestion reads as a hint instead of competing with what Matt typed.
+fn faint(c: [f64; 4], dim: bool) -> [f64; 4] {
+    if dim { [c[0] * DIM, c[1] * DIM, c[2] * DIM, c[3]] } else { c }
+}
+
+const DIM: f64 = 1.0 / 3.0;
 
 fn draw_run(fonts: &[Retained<NSFont>], text: &str, attrs: &Attrs, color: [f64; 4], x: f64, y: f64) {
     let font = &fonts[attrs.bold as usize + 2 * attrs.italic as usize];

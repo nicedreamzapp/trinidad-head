@@ -1853,6 +1853,16 @@ fn colors(a: &Attrs, default_fg: D2D1_COLOR_F) -> (D2D1_COLOR_F, Option<D2D1_COL
     if a.inverse {
         (bg.unwrap_or(rgb(theme::BODY)), Some(fg.unwrap_or(default_fg)))
     } else {
-        (fg.unwrap_or(default_fg), bg)
+        (faint(fg.unwrap_or(default_fg), a.dim), bg)
     }
+}
+
+/// SGR 2 text is drawn at a third of its brightness, so Claude Code's ghost
+/// suggestion reads as a hint instead of competing with what Matt typed.
+fn faint(c: D2D1_COLOR_F, dim: bool) -> D2D1_COLOR_F {
+    if !dim {
+        return c;
+    }
+    const DIM: f32 = 1.0 / 3.0;
+    D2D1_COLOR_F { r: c.r * DIM, g: c.g * DIM, b: c.b * DIM, a: c.a }
 }

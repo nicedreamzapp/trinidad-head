@@ -20,6 +20,8 @@ pub struct Attrs {
     pub fg: Color,
     pub bg: Color,
     pub bold: bool,
+    /// SGR 2 (faint). Claude Code's inline ghost suggestion arrives this way.
+    pub dim: bool,
     pub italic: bool,
     pub underline: bool,
     pub inverse: bool,
@@ -628,10 +630,14 @@ impl Terminal {
             match v {
                 0 => self.pen = Attrs::default(),
                 1 => self.pen.bold = true,
+                2 => self.pen.dim = true,
                 3 => self.pen.italic = true,
                 4 => self.pen.underline = true,
                 7 => self.pen.inverse = true,
-                22 => self.pen.bold = false,
+                22 => {
+                    self.pen.bold = false;
+                    self.pen.dim = false;
+                }
                 23 => self.pen.italic = false,
                 24 => self.pen.underline = false,
                 27 => self.pen.inverse = false,
@@ -984,6 +990,18 @@ mod tests {
         assert!(l[0].attrs.bold);
         assert_eq!(l[1].attrs.fg, Color::Rgb(1, 2, 3));
         assert_eq!(l[2].attrs, Attrs::default());
+    }
+
+    /// SGR 2 is how Claude Code marks its inline ghost suggestion, and SGR 22 clears
+    /// both faint and bold.
+    #[test]
+    fn faint_text() {
+        let mut t = Terminal::new(10, 1);
+        t.feed(b"\x1b[2mF\x1b[22mN\x1b[1;2mB");
+        let l = t.line(0, 0);
+        assert!(l[0].attrs.dim && !l[0].attrs.bold);
+        assert!(!l[1].attrs.dim);
+        assert!(l[2].attrs.dim && l[2].attrs.bold);
     }
 
     #[test]
