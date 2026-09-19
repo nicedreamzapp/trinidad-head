@@ -5,7 +5,7 @@ members = ["crates/core-vt", "crates/pty", "crates/app"]
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
-license = "UNLICENSED"
+license = "MIT OR Apache-2.0"
 
 [workspace.dependencies]
 windows = { version = "0.62", features = [

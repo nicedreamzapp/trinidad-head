@@ -131,12 +131,18 @@ target\release\trinidad-head.exe
 The full plan is in [docs/PLAN.md](docs/PLAN.md), and the research behind it is in
 [docs/RESEARCH.md](docs/RESEARCH.md).
 
+## 📜 License
+
+Trinidad Head is dual-licensed under either the [MIT License](LICENSE-MIT) or the
+[Apache License 2.0](LICENSE-APACHE), at your option, the same way most Rust projects are.
+Unless you say otherwise, any contribution you submit is dual-licensed the same way.
+
 ---
 
 <div align="center">
 
 Made in Humboldt County, California by **[Matt Macosko](https://nicedreamzwholesale.com/software/)** · [Project page](https://nicedreamzwholesale.com/software/trinidad-head/)
 
-© 2026 Matt Macosko. All rights reserved for now; a license will be chosen before the first release.
+© 2026 Matt Macosko. Licensed under MIT or Apache-2.0, your choice.
 
 </div>

@@ -3,6 +3,7 @@ name = "trinidad-head"
 description = "The terminal window."
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 
 [[bin]]
 name = "trinidad-head"
