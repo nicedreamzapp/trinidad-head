@@ -132,6 +132,8 @@ struct App {
     /// without waiting for the mouse to move again.
     autoscroll: bool,
     drag_pt: (f32, f32),
+    /// Autoscroll ticks so far (the self-test reads it out of the screen dump).
+    autoscroll_ticks: u64,
     meter: crate::latency::Meter,
     last_title: Instant,
     started: Instant,
@@ -291,6 +293,7 @@ pub fn run() {
             pending_press: None,
             autoscroll: false,
             drag_pt: (0.0, 0.0),
+            autoscroll_ticks: 0,
             meter: crate::latency::Meter::new(log),
             last_title: Instant::now(),
             started,
@@ -739,6 +742,7 @@ impl App {
     /// pointer. The end point is clamped to the visible grid, so scrolling is what lets the
     /// selection reach text that was never on screen.
     fn autoscroll_step(&mut self) {
+        self.autoscroll_ticks += 1;
         let (x, y) = self.drag_pt;
         let lines = self.autoscroll_lines(y);
         if !self.selecting || lines == 0 {
@@ -1720,6 +1724,18 @@ impl App {
                         }
                     }
                     out.push_str(&format!("backgrounds {}\n", bgs.join(" ")));
+                    out.push_str(&format!(
+                        "scroll {} of {} autoscroll {} ticks, drag {:.0},{:.0}, text {:.0},{:.0},{:.0},{:.0}\n",
+                        self.scroll_offset,
+                        term.scrollback_len(),
+                        self.autoscroll_ticks,
+                        self.drag_pt.0,
+                        self.drag_pt.1,
+                        self.layout.text.l,
+                        self.layout.text.t,
+                        self.layout.text.r,
+                        self.layout.text.b,
+                    ));
                     if let Some((p50, p95, n)) = self.meter.stats() {
                         out.push_str(&format!("typing delay median {p50:.1} ms, p95 {p95:.1} ms over {n} keys\n"));
                     }

@@ -151,9 +151,12 @@ $ay = [int]($tt + ($lastRow + 0.5) * $cellH)
 [void][TW]::PostMessage($hw, $WM_KD, [IntPtr]0x28, [IntPtr]0); Start-Sleep -m 200
 [void][TW]::PostMessage($hw, $WM_KD, [IntPtr]0x0D, [IntPtr]0); Start-Sleep -m 600
 if ([TW]::FindWindow("#32768", $null) -ne [IntPtr]::Zero) { [void][TW]::PostMessage($hw, $WM_CANCELMODE, [IntPtr]0, [IntPtr]0); Start-Sleep -m 400 }
+$diag = ""
+$d2 = Get-Content C:\Users\matt\dev\th_test_dump.txt -ErrorAction SilentlyContinue
+foreach ($ln in $d2) { if ($ln -like "scroll * autoscroll *") { $diag = $ln } }
 $grab = [System.Windows.Forms.Clipboard]::GetText()
 $grabbed = ($grab -split "`r?`n").Count
-Check "a drag held above the top edge keeps scrolling" ($grabbed -gt $rows) "copied $grabbed lines; the screen holds $rows"
+Check "a drag held above the top edge keeps scrolling" ($grabbed -gt $rows) "copied $grabbed lines; the screen holds $rows; $diag"
 $topLine = 0
 if ($grab -match '^AUTOSCROLL-LINE-(\d+)') { $topLine = [int]$Matches[1] }
 Check "the copy starts above the first line that was on screen" (($topLine -gt 0) -and ($topLine -lt $firstLine)) "copy starts at line $topLine; the screen started at line $firstLine"
