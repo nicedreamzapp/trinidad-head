@@ -164,6 +164,53 @@ Check "the copy starts above the first line that was on screen" (($topLine -gt 0
 for ($i = 0; $i -lt 60; $i++) { [void][TW]::PostMessage($hw, $WM_WH, [IntPtr](-120 -shl 16), [TW]::L($ax, $ay)) }
 Start-Sleep -m 500
 
+# Selecting past the edge inside a program that owns the screen, the way Claude Code does.
+# The child takes the alternate screen, keeps 300 lines to itself and scrolls on wheel reports,
+# so none of that text is in our scrollback and grid coordinates cannot express the selection.
+Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+Start-Sleep 1
+$q = Start-Process -FilePath $exe -ArgumentList "`"$py`" C:\Users\matt\dev\pctools\th_fullscreen_child.py" -PassThru
+Start-Sleep 3
+$q.Refresh(); $qh = $q.MainWindowHandle
+[void][TW]::SetWindowPos($qh, [IntPtr]::Zero, -5000, 200, 0, 0, 0x15)
+Start-Sleep -m 800
+$qd = ""
+for ($w = 0; $w -lt 40; $w++) {
+  [void][TW]::PostMessage($qh, 0x000F, [IntPtr]0, [IntPtr]0); Start-Sleep -m 400
+  $qd = Get-Content C:\Users\matt\dev\th_test_dump.txt -ErrorAction SilentlyContinue
+  if (($qd -join "`n") -match "PROGRAM-LINE-") { break }
+}
+$qrows = [int]([regex]::Match((($qd | Select-String "size").Line), 'x(\d+)').Groups[1].Value)
+$qfirst = 0
+foreach ($ln in $qd) { if ($ln -match '^PROGRAM-LINE-(\d+)') { $qfirst = [int]$Matches[1]; break } }
+$qlast = -1
+for ($i = 0; $i -lt $qrows -and $i -lt $qd.Count; $i++) { if ($qd[$i] -match '^PROGRAM-LINE-\d+') { $qlast = $i } }
+$qy = [int]($tt + ($qlast + 0.5) * $cellH)
+[System.Windows.Forms.Clipboard]::SetText("before-program")
+[void][TW]::PostMessage($qh, $WM_LD, [IntPtr]1, [TW]::L($tl + 2, $qy)); Start-Sleep -m 150
+[void][TW]::PostMessage($qh, $WM_MV, [IntPtr]1, [TW]::L($tl + 2, $qy - 10)); Start-Sleep -m 150
+[void][TW]::PostMessage($qh, $WM_MV, [IntPtr]1, [TW]::L($tl + 2, $tt - 20)); Start-Sleep -m 3000
+[void][TW]::PostMessage($qh, $WM_LU, [IntPtr]0, [TW]::L($tl + 2, $tt - 20)); Start-Sleep -m 500
+[void][TW]::PostMessage($qh, $WM_RU, [IntPtr]0, [TW]::L($tl + 2, $qy)); Start-Sleep -m 700
+[void][TW]::PostMessage($qh, $WM_KD, [IntPtr]0x28, [IntPtr]0); Start-Sleep -m 200
+[void][TW]::PostMessage($qh, $WM_KD, [IntPtr]0x0D, [IntPtr]0); Start-Sleep -m 700
+if ([TW]::FindWindow("#32768", $null) -ne [IntPtr]::Zero) { [void][TW]::PostMessage($qh, $WM_CANCELMODE, [IntPtr]0, [IntPtr]0); Start-Sleep -m 400 }
+$pg = [System.Windows.Forms.Clipboard]::GetText()
+$pgl = @($pg -split "`r?`n" | Where-Object { $_ -match '^PROGRAM-LINE-\d+$' })
+Check "full-screen program: the copy holds more than it was showing" ($pgl.Count -gt $qrows) "copied $($pgl.Count) lines; the screen holds $qrows"
+$pgn = @($pgl | ForEach-Object { [int]($_ -replace '\D','') })
+$ordered = $true
+for ($i = 1; $i -lt $pgn.Count; $i++) { if ($pgn[$i] -ne $pgn[$i-1] + 1) { $ordered = $false; break } }
+Check "full-screen program: every line in order, none repeated or skipped" ($ordered -and $pgn.Count -gt 0) "$($pgn[0])..$($pgn[-1]) of $($pgn.Count)"
+Check "full-screen program: the copy reaches past where the screen started" (($pgn.Count -gt 0) -and ($pgn[0] -lt $qfirst)) "copy starts at $($pgn[0]); the screen started at $qfirst"
+Stop-Process -Id $q.Id -Force -ErrorAction SilentlyContinue
+Start-Sleep 1
+$p = Start-Process -FilePath $exe -ArgumentList "`"$py`" C:\Users\matt\dev\pctools\th_child.py" -PassThru
+Start-Sleep 3
+$p.Refresh(); $hw = $p.MainWindowHandle
+[void][TW]::SetWindowPos($hw, [IntPtr]::Zero, -5000, 200, 0, 0, 0x15)
+Start-Sleep -m 500
+
 # Resize.
 $before = ($dump | Select-String "size").Line
 $wr = New-Object TW+R; [void][TW]::GetWindowRect($hw, [ref]$wr)
