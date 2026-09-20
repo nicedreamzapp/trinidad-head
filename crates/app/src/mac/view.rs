@@ -771,11 +771,6 @@ impl TermView {
         self.ivars().borrow().scroll_offset
     }
 
-    /// The selection as absolute (line, column) pairs, lowest first (the self-test reads it).
-    pub(super) fn selection(&self) -> Option<((usize, usize), (usize, usize))> {
-        self.ivars().borrow().sel.map(|(a, b)| if a <= b { (a, b) } else { (b, a) })
-    }
-
     /// The web link under a point in the text area, following it across wrapped rows.
     fn link_at(&self, x: f32, y: f32) -> Option<String> {
         if !self.ivars().borrow().layout.text.contains(x, y) {
