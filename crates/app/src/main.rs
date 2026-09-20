@@ -17,6 +17,8 @@ mod layout;
 mod theme;
 #[allow(dead_code)]
 mod textutil;
+#[cfg(any(windows, target_os = "macos"))]
+mod update;
 #[cfg(windows)]
 mod win;
 #[cfg(target_os = "macos")]

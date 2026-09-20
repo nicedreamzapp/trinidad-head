@@ -4,6 +4,18 @@ use std::path::PathBuf;
 use std::process::Command;
 
 fn main() {
+    // The commit this binary was built from, so it can tell whether main has moved on.
+    let sha = Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_default();
+    println!("cargo:rustc-env=TH_GIT_SHA={sha}");
+    println!("cargo:rerun-if-changed=../../.git/HEAD");
+    println!("cargo:rerun-if-changed=../../.git/refs/heads/main");
+
     println!("cargo:rerun-if-changed=app.rc");
     println!("cargo:rerun-if-changed=../../assets/icon.ico");
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {

@@ -154,10 +154,20 @@ static PAINT_QUEUED: AtomicBool = AtomicBool::new(false);
 static MISSED_OUTPUT: AtomicBool = AtomicBool::new(false);
 
 pub fn run() {
+    // Before any window or shell exists: a test asking "would you update?" must not
+    // leave a child process holding the pipe it is reading.
+    if std::env::var_os("TRINIDAD_HEAD_UPDATE_NOW").is_some() {
+        crate::update::run_once_and_exit();
+    }
     let started = Instant::now();
     unsafe {
         let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     }
+    if std::env::var_os("TRINIDAD_HEAD_UPDATE_NOW").is_some() {
+        crate::update::run_once_and_exit();
+    }
+    // Fetch and rebuild in the background if main has moved: the next window is the new one.
+    crate::update::spawn_check();
     // Tell programs in the shell we draw full 24-bit color (Claude Code checks this).
     std::env::set_var("COLORTERM", "truecolor");
     std::env::set_var("TERM_PROGRAM", "TrinidadHead");

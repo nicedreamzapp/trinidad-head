@@ -157,6 +157,11 @@ fn build_menu(mtm: MainThreadMarker, app: &NSApplication) {
 }
 
 pub fn run() {
+    // Before any window or shell exists: a test asking "would you update?" must not
+    // leave a child process holding the pipe it is reading.
+    if std::env::var_os("TRINIDAD_HEAD_UPDATE_NOW").is_some() {
+        crate::update::run_once_and_exit();
+    }
     let started = Instant::now();
     let mtm = MainThreadMarker::new().expect("must start on the main thread");
     let app = NSApplication::sharedApplication(mtm);
@@ -241,6 +246,8 @@ pub fn run() {
     #[allow(deprecated)]
     app.activateIgnoringOtherApps(true);
     quit_on_signals();
+    // Fetch and rebuild in the background if main has moved: the next window is the new one.
+    crate::update::spawn_check();
     if let Ok(mode) = std::env::var("TRINIDAD_HEAD_SELFTEST") {
         selftest::start(&mode, window.retain(), view.clone());
     }
