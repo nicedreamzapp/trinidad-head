@@ -65,17 +65,33 @@ if [ -z "$IDENTITY" ]; then
 elif codesign --force --deep --sign "$IDENTITY" "$STAGE" >/dev/null 2>&1; then
   echo "signed with $IDENTITY"
 else
-  # Over SSH the login keychain is locked in this session and codesign fails with
-  # errSecInternalComponent. Finder is in the logged-in session, so ask it to run the
-  # same command there.
-  script="/usr/bin/codesign --force --deep --sign $IDENTITY '"'"'$STAGE'"'"'"
-  if osascript -e "tell application \"Finder\" to do shell script \"$script\"" >/dev/null 2>&1 \
-     && codesign --verify --strict "$STAGE" >/dev/null 2>&1; then
-    echo "signed with $IDENTITY (through the logged-in session)"
+  # Over SSH the login keychain is locked in this session, so codesign fails with
+  # errSecInternalComponent. A Trinidad Head window runs in the logged-in session, where the
+  # keychain is open, so hand the same command to one of those and wait for it. (Finder's
+  # "do shell script" cannot: it hits "User interaction is not allowed".)
+  TH_OPEN=""
+  for c in "$HOME/Scripts/trinidad-head/th-open" "$ROOT/mac-tools/th-open"; do
+    [ -x "$c" ] && TH_OPEN="$c" && break
+  done
+  FLAG="$WORK/signed"
+  if [ -n "$TH_OPEN" ] && [ -x "$APP/Contents/MacOS/trinidad-head" ]; then
+    cat > "$WORK/sign.command" <<SIGN
+#!/bin/bash
+/usr/bin/codesign --force --deep --sign "$IDENTITY" "$STAGE" && echo ok > "$FLAG"
+SIGN
+    chmod +x "$WORK/sign.command"
+    "$TH_OPEN" "$WORK/sign.command" >/dev/null 2>&1 || true
+    for _ in $(seq 60); do
+      [ -f "$FLAG" ] && break
+      sleep 0.5
+    done
+  fi
+  if [ -f "$FLAG" ] && codesign --verify --strict "$STAGE" >/dev/null 2>&1; then
+    echo "signed with $IDENTITY (in a window on the Mac itself)"
   elif [ "${TH_ALLOW_ADHOC:-}" = 1 ]; then
     sign_adhoc
   else
-    echo "codesign with $IDENTITY failed and the logged-in session could not do it either." >&2
+    echo "codesign with $IDENTITY failed, and no window on the Mac could do it either." >&2
     echo "Refusing to ad-hoc sign: that would drop Full Disk Access, Accessibility and" >&2
     echo "Screen Recording for Trinidad Head. Run this from a window on the Mac itself," >&2
     echo "or set TH_ALLOW_ADHOC=1 if you really want to re-grant them by hand." >&2
