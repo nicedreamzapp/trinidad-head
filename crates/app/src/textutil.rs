@@ -120,18 +120,22 @@ impl Harvest {
     /// Bank whatever the program uncovered since the last step. False once it has stopped
     /// moving, which is how a drag against the top of a chat ends.
     pub fn absorb(&mut self, now: Vec<String>) -> bool {
-        let rows = now.len();
-        let k = scrolled_by(&self.last, &now, self.up).min(rows);
-        if k == 0 {
-            self.stuck += 1;
-        } else {
-            self.stuck = 0;
-            if self.up {
-                let mut head = now[..k].to_vec();
-                head.append(&mut self.lines);
-                self.lines = head;
-            } else {
-                self.lines.extend_from_slice(&now[rows - k..]);
+        let fresh = match moved(&self.last, &now, self.up) {
+            Moved::Still => None,
+            Moved::Rows(r) => Some(now[r].to_vec()),
+            Moved::Jumped => Some(now.clone()),
+        };
+        match fresh {
+            None => self.stuck += 1,
+            Some(rows) => {
+                self.stuck = 0;
+                if self.up {
+                    let mut head = rows;
+                    head.append(&mut self.lines);
+                    self.lines = head;
+                } else {
+                    self.lines.extend(rows);
+                }
             }
         }
         self.last = now;
@@ -148,20 +152,84 @@ impl Harvest {
     }
 }
 
-/// How many rows the screen scrolled between two snapshots, by the longest overlap.
-/// 0 means it did not move; a whole screen means it jumped somewhere unrelated.
-fn scrolled_by(old: &[String], new: &[String], up: bool) -> usize {
+/// What the screen did between two snapshots.
+enum Moved {
+    /// Nothing travelled: the program has nothing more to show.
+    Still,
+    /// These rows of the new screen were not on the old one, in reading order.
+    Rows(std::ops::Range<usize>),
+    /// Nothing lines up at all, so the program jumped somewhere unrelated.
+    Jumped,
+}
+
+/// The longest unbroken run of rows that line up when the screen is read as having travelled
+/// `k` rows, given in NEW-screen coordinates, with the count of non-blank rows in it. Blank
+/// rows line up with each other by accident, so they do not vote.
+fn run_at(old: &[String], new: &[String], up: bool, k: usize) -> Option<(usize, usize, usize)> {
     let rows = old.len().min(new.len());
-    if rows == 0 || old[..rows] == new[..rows] {
-        return 0;
+    if k >= rows {
+        return None;
     }
-    for k in 1..rows {
-        let same = if up { new[k..rows] == old[..rows - k] } else { new[..rows - k] == old[k..rows] };
-        if same {
-            return k;
+    let mut best: Option<(usize, usize, usize)> = None;
+    let mut start: Option<usize> = None;
+    let mut weight = 0usize;
+    let keep = |best: &mut Option<(usize, usize, usize)>, s: usize, e: usize, w: usize| {
+        if best.is_none_or(|(_, _, bw)| w > bw) {
+            *best = Some((s, e, w));
+        }
+    };
+    for i in 0..rows - k {
+        let (o, n) = if up { (i, i + k) } else { (i + k, i) };
+        if old[o] == new[n] {
+            if start.is_none() {
+                start = Some(n);
+                weight = 0;
+            }
+            if !new[n].trim().is_empty() {
+                weight += 1;
+            }
+            if i + 1 == rows - k {
+                keep(&mut best, start.unwrap(), n + 1, weight);
+            }
+        } else if let Some(s) = start.take() {
+            keep(&mut best, s, n, weight);
         }
     }
-    rows
+    best
+}
+
+/// Read two snapshots as one screen that travelled. A full-screen program usually pins part of
+/// the grid — Claude Code keeps its prompt box and status line at the bottom, and they never
+/// scroll — so only the rows that really moved may be banked. Whole-screen matching would find
+/// no overlap at all against a pinned box and call every repaint a jump, which is how the same
+/// screen ended up in the clipboard over and over.
+fn moved(old: &[String], new: &[String], up: bool) -> Moved {
+    let rows = old.len().min(new.len());
+    if rows == 0 || old[..rows] == new[..rows] {
+        return Moved::Still;
+    }
+    let still = run_at(old, new, up, 0).map_or(0, |(_, _, w)| w);
+    let mut best: Option<(usize, usize, usize, usize)> = None;
+    for k in 1..rows {
+        if let Some((s, e, w)) = run_at(old, new, up, k) {
+            if best.is_none_or(|(_, _, _, bw)| w > bw) {
+                best = Some((k, s, e, w));
+            }
+        }
+    }
+    match best {
+        // Two rows in a row is the least that tells travel apart from a coincidence.
+        Some((k, s, e, w)) if w > still && w >= 2 => {
+            let range = if up { s.saturating_sub(k)..s } else { e..(e + k).min(new.len()) };
+            if range.is_empty() {
+                Moved::Still
+            } else {
+                Moved::Rows(range)
+            }
+        }
+        _ if still > 0 => Moved::Still,
+        _ => Moved::Jumped,
+    }
 }
 
 #[cfg(test)]
@@ -195,6 +263,38 @@ mod harvest_tests {
         }
         assert!(!h.absorb(screen(10, 5)));
         assert!(h.lines.is_empty());
+    }
+
+    /// Claude Code's real shape: a prompt box pinned to the bottom that never scrolls, and a
+    /// status line inside it that changes on every repaint. Only the rows above it travel.
+    fn chat(from: usize, n: usize, paint: usize) -> Vec<String> {
+        let mut rows: Vec<String> = (from..from + n).map(|i| format!("line {i}")).collect();
+        rows.push(String::new());
+        rows.push("> ask me anything".into());
+        rows.push(format!("  ? for shortcuts   {paint} paints"));
+        rows
+    }
+
+    #[test]
+    fn a_pinned_prompt_box_does_not_stop_it_reading_the_scroll() {
+        let mut h = Harvest::new(true, chat(10, 6, 1), Vec::new());
+        assert!(h.absorb(chat(7, 6, 2)));
+        assert_eq!(h.lines, ["line 7", "line 8", "line 9"]);
+        assert!(h.absorb(chat(4, 6, 3)));
+        assert_eq!(h.lines, ["line 4", "line 5", "line 6", "line 7", "line 8", "line 9"]);
+        // Down the other way, the new rows come off the bottom of the text, not the box.
+        let mut h = Harvest::new(false, chat(10, 6, 1), Vec::new());
+        assert!(h.absorb(chat(13, 6, 2)));
+        assert_eq!(h.lines, ["line 16", "line 17", "line 18"]);
+    }
+
+    #[test]
+    fn a_pinned_box_over_a_still_screen_is_still_still() {
+        let mut h = Harvest::new(true, chat(10, 6, 1), Vec::new());
+        // Only the ticking status line changed: the program has nothing more to show.
+        assert!(h.absorb(chat(10, 6, 2)));
+        assert!(h.lines.is_empty());
+        assert_eq!(h.stuck, 1);
     }
 
     #[test]

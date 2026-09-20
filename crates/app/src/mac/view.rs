@@ -775,6 +775,21 @@ impl TermView {
         self.ivars().borrow().link_opened.clone()
     }
 
+    /// Test hooks: what the view thinks the screen and the drag are doing.
+    pub(super) fn mouse_mode_for_test(&self) -> (u16, bool) {
+        self.mouse_mode()
+    }
+
+    pub(super) fn screen_shape_for_test(&self) -> (bool, usize) {
+        let st = self.ivars().borrow();
+        let s = st.shared.lock().unwrap();
+        (s.term.in_alt_screen(), s.term.scrollback_len())
+    }
+
+    pub(super) fn selecting_for_test(&self) -> bool {
+        self.ivars().borrow().selecting
+    }
+
     /// Lines gathered from a full-screen program, ticks where nothing moved, and autoscroll
     /// ticks in total (the self-test reads all three).
     pub(super) fn harvest_state(&self) -> (usize, u32, u64) {

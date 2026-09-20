@@ -72,12 +72,17 @@ fi
 
 # Selecting past the edge inside a program that owns the screen, like Claude Code does.
 run_mode program 90 "python3 '$ROOT/scripts/fullscreen-child.py'"
+# The same thing in the shape Claude Code really has: a prompt box pinned to the bottom that
+# never scrolls, and three lines of travel per notch.
+run_mode program-chat 90 "CHILD_SHAPE=chat python3 '$ROOT/scripts/fullscreen-child.py'"
 
 run_mode version 40 "claude --version; sleep 20"
 # A fixed folder, so Claude's "trust this folder?" question is answered only once, ever.
 CLAUDE_DIR="$HOME/Library/Application Support/TrinidadHead/claude-selftest"
 mkdir -p "$CLAUDE_DIR"
 run_mode claude 150 "cd '$CLAUDE_DIR' && claude"
+# The same selection job against the real thing. /help is local, so this costs no tokens.
+run_mode claude-select 150 "cd '$CLAUDE_DIR' && claude"
 if [ -z "${ONLY:-}" ] || [ "$ONLY" = claude ]; then
   sleep 2
   left=""

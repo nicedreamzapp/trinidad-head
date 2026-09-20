@@ -352,7 +352,8 @@ pub fn start(mode: &str, window: Retained<THWindow>, view: Retained<TermView>) {
         "claude" => claude_steps(),
         "version" => version_steps(),
         "stress" => stress_steps(),
-        "program" => program_steps(),
+        "program" | "program-chat" => program_steps(),
+        "claude-select" => claude_select_steps(),
         other => {
             append(&format!("FAIL unknown self-test mode {other}"));
             return;
@@ -942,6 +943,107 @@ fn full_steps() -> Vec<Step> {
         // Still here: the close didn't happen.
         ON_QUIT.lock().unwrap().take();
         c.check("red button closes the window and quits", false, "window still open");
+        append("DONE");
+        c.close_window();
+    }));
+    s
+}
+
+/// The same selecting-past-the-edge job as `program_steps`, but against REAL Claude Code
+/// instead of a stand-in, because the stand-in is only ever our idea of what Claude does.
+/// `/help` prints a long page locally, so the transcript grows past one screen without ever
+/// calling the model.
+fn claude_select_steps() -> Vec<Step> {
+    let mut s: Vec<Step> = Vec::new();
+    s.push(act(0.2, |c| place_window(c, 900.0, 520.0)));
+    s.push(poll(
+        0.5,
+        40,
+        |c| {
+            let t = c.screen_text();
+            claude_main_ui(&t) || t.contains("trust this folder")
+        },
+        |c, _| {
+            if c.screen_text().contains("trust this folder") {
+                append("NOTE Claude asked to trust the test folder; answered yes");
+                c.key("\u{F701}", "\u{F701}", NSEventModifierFlags::Function, 125);
+                c.key("\r", "\r", NSEventModifierFlags::empty(), 36);
+            }
+        },
+    ));
+    s.push(poll(
+        0.5,
+        40,
+        |c| claude_main_ui(&c.screen_text()),
+        |c, ok| c.check("Claude Code is up for the selection test", ok, c.screen_text()),
+    ));
+    // Fill the transcript with local output. Claude's `!` shell mode runs a command and puts
+    // its output in the transcript, so this costs no tokens. (`/help` is no good here: it opens
+    // an overlay that owns the screen instead of adding anything to scroll back through.)
+    for _ in 0..3 {
+        s.push(act(1.0, |c| c.key("!", "!", NSEventModifierFlags::empty(), 18)));
+        s.push(act(0.5, |c| {
+            c.set_pasteboard("ls -1 /usr/share/man/man1 | head -40");
+            c.key("v", "v", NSEventModifierFlags::Command, 9);
+        }));
+        s.push(act(0.5, |c| c.key("\r", "\r", NSEventModifierFlags::empty(), 36)));
+    }
+    s.push(act(2.0, |c| {
+        let (_cols, rows) = c.term_size();
+        append(&format!("NOTE Claude window is {rows} rows"));
+        c.set_pasteboard("before");
+        // Press on the last row of text and hold the pointer above the top edge.
+        let (x, y) = c.cell_point(rows - 1, 0);
+        let top = c.view.layout().text.t as f64 - 20.0;
+        c.mouse(NSEventType::LeftMouseDown, x, y, NSEventModifierFlags::empty());
+        c.mouse(NSEventType::LeftMouseDragged, x, y - 8.0, NSEventModifierFlags::empty());
+        c.mouse(NSEventType::LeftMouseDragged, x, top, NSEventModifierFlags::empty());
+    }));
+    s.push(act(0.4, |c| {
+        let (mode, _) = c.view.mouse_mode_for_test();
+        let (alt, back) = c.view.screen_shape_for_test();
+        append(&format!("NOTE at the drag: mouse tracking {mode}, alt screen {alt}, scrollback {back}, selecting {}, selection {}", c.view.selecting_for_test(), c.has_sel()));
+        std::fs::write("/tmp/th_claude_select_screen.txt", c.screen_text()).ok();
+    }));
+    s.push(act(2.6, |_| {}));
+    s.push(act(0.1, |c| {
+        let (_cols, rows) = c.term_size();
+        let (banked, stuck, ticks) = c.view.harvest_state();
+        append(&format!("NOTE harvest {banked} lines over {ticks} ticks, {stuck} of them idle"));
+        append(&format!("NOTE after the hold: selecting {}, selection {}", c.view.selecting_for_test(), c.has_sel()));
+        c.check("the selection survived Claude Code repainting", c.has_sel(), "no selection");
+        let (x, _) = c.cell_point(rows - 1, 0);
+        let top = c.view.layout().text.t as f64 - 20.0;
+        c.mouse(NSEventType::LeftMouseUp, x, top, NSEventModifierFlags::empty());
+        c.key("c", "c", NSEventModifierFlags::Command, 8);
+    }));
+    s.push(act(0.5, |c| {
+        let (_cols, rows) = c.term_size();
+        let got = c.pasteboard();
+        let lines: Vec<&str> = got.lines().collect();
+        c.check(
+            "the copy reaches past the screen Claude was showing",
+            lines.len() > rows,
+            format!("copied {} lines; the screen holds {rows}", lines.len()),
+        );
+        // The prompt box is pinned to the bottom and never scrolls, so it is on screen for
+        // every repaint. Banking whole screens is exactly what put it in the copy over and over.
+        let boxes = lines.iter().filter(|l| l.contains('\u{276F}')).count();
+        c.check(
+            "the pinned prompt box is not copied once per repaint",
+            boxes <= 2,
+            format!("the prompt row appears {boxes} times in {} lines", lines.len()),
+        );
+        let solid: Vec<&&str> = lines.iter().filter(|l| l.trim().len() > 8).collect();
+        let repeat = (0..solid.len().saturating_sub(8)).find(|&i| solid[i..i + 4] == solid[i + 4..i + 8]);
+        c.check(
+            "no block of the copy repeats straight after itself",
+            repeat.is_none(),
+            match repeat {
+                Some(i) => format!("lines {}-{} repeat: {:?}", i, i + 4, &solid[i..i + 4]),
+                None => String::new(),
+            },
+        );
         append("DONE");
         c.close_window();
     }));
