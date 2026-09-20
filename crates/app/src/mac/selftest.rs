@@ -352,6 +352,7 @@ pub fn start(mode: &str, window: Retained<THWindow>, view: Retained<TermView>) {
         "claude" => claude_steps(),
         "version" => version_steps(),
         "stress" => stress_steps(),
+        "program" => program_steps(),
         other => {
             append(&format!("FAIL unknown self-test mode {other}"));
             return;
@@ -1037,6 +1038,90 @@ fn claude_steps() -> Vec<Step> {
         append("DONE");
         c.close_window();
     }));
+    s
+}
+
+/// Selecting past the edge inside a program that owns the screen. The window runs
+/// `scripts/fullscreen-child.py`, which behaves like Claude Code: alternate screen, mouse
+/// tracking on, 300 lines it keeps to itself and paints one screen of. None of that text is
+/// in our scrollback, so this is the case that grid coordinates cannot express.
+fn program_steps() -> Vec<Step> {
+    let start: Rc<Cell<(usize, usize)>> = Rc::new(Cell::new((0, 0)));
+    let mut s: Vec<Step> = Vec::new();
+
+    fn line_no(text: &str) -> usize {
+        text.rsplit('-').next().and_then(|n| n.trim().parse().ok()).unwrap_or(0)
+    }
+
+    // Wait for the program to paint, then press on the bottom row and hold the pointer above
+    // the top edge without moving it again.
+    {
+        let rec = start.clone();
+        s.push(poll(
+            0.5,
+            40,
+            |c| c.screen_text().contains("PROGRAM-LINE-300"),
+            move |c, ok| {
+                c.check("the full-screen program painted", ok, c.screen_text());
+                let (_cols, rows) = c.term_size();
+                let first = line_no(c.screen_text().lines().next().unwrap_or(""));
+                rec.set((first, rows));
+                c.set_pasteboard("before");
+                let (x, y) = c.cell_point(rows - 1, 0);
+                let top = c.view.layout().text.t as f64 - 20.0;
+                c.mouse(NSEventType::LeftMouseDown, x, y, NSEventModifierFlags::empty());
+                c.mouse(NSEventType::LeftMouseDragged, x, y - 8.0, NSEventModifierFlags::empty());
+                c.mouse(NSEventType::LeftMouseDragged, x, top, NSEventModifierFlags::empty());
+            },
+        ));
+    }
+    // A poll runs the next step 0.1s later, so the hold gets a step of its own.
+    s.push(act(2.5, |_| {}));
+    {
+        let rec = start.clone();
+        s.push(act(0.1, move |c| {
+            let (first, rows) = rec.get();
+            let now = line_no(c.screen_text().lines().next().unwrap_or(""));
+            c.check(
+                "holding the drag above the edge makes the program scroll",
+                now > 0 && now < first,
+                format!("top line {first} -> {now}"),
+            );
+            c.check("the selection survived the program repainting", c.has_sel(), "no selection");
+            let (banked, stuck, ticks) = c.view.harvest_state();
+            append(&format!("NOTE harvest {banked} lines over {ticks} ticks, {stuck} of them idle"));
+            let (x, _) = c.cell_point(rows - 1, 0);
+            let top = c.view.layout().text.t as f64 - 20.0;
+            c.mouse(NSEventType::LeftMouseUp, x, top, NSEventModifierFlags::empty());
+            c.key("c", "c", NSEventModifierFlags::Command, 8);
+        }));
+    }
+    {
+        let rec = start.clone();
+        s.push(act(0.4, move |c| {
+            let (first, rows) = rec.get();
+            let got = c.pasteboard();
+            let lines: Vec<&str> = got.lines().filter(|l| l.starts_with("PROGRAM-LINE-")).collect();
+            c.check(
+                "the copy holds more than the program was showing",
+                lines.len() > rows,
+                format!("copied {} program lines; the screen holds {rows}", lines.len()),
+            );
+            let nums: Vec<usize> = lines.iter().map(|l| line_no(l)).collect();
+            c.check(
+                "the copy is every line in order, none repeated or skipped",
+                nums.windows(2).all(|w| w[1] == w[0] + 1),
+                format!("{:?}...{:?}", &nums[..nums.len().min(4)], &nums[nums.len().saturating_sub(4)..]),
+            );
+            c.check(
+                "the copy reaches back past where the screen started",
+                nums.first().is_some_and(|&n| n < first),
+                format!("copy starts at {:?}; the screen started at {first}", nums.first()),
+            );
+            append("DONE");
+            c.close_window();
+        }));
+    }
     s
 }
 

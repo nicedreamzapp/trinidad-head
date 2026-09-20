@@ -5,6 +5,7 @@
 set -u
 # TH_BIN points the run at a build that is not installed yet (test before you ship).
 APP_BIN="${TH_BIN:-$HOME/Applications/Trinidad Head.app/Contents/MacOS/trinidad-head}"
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 OUT="${1:-/tmp/trinidad-head-selftest.txt}"
 WORK="$(mktemp -d /tmp/th_selftest.XXXXXX)"
 : > "$OUT"
@@ -68,6 +69,9 @@ if [ -z "${ONLY:-}" ] || [ "$ONLY" = full ]; then
     *) echo "NOTE no test Finder window left open ($names)" >> "$OUT" ;;
   esac
 fi
+
+# Selecting past the edge inside a program that owns the screen, like Claude Code does.
+run_mode program 90 "python3 '$ROOT/scripts/fullscreen-child.py'"
 
 run_mode version 40 "claude --version; sleep 20"
 # A fixed folder, so Claude's "trust this folder?" question is answered only once, ever.

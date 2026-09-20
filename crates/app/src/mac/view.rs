@@ -28,6 +28,7 @@ use super::paint::{self, rgba};
 use super::Shared;
 use crate::latency::Meter;
 use crate::layout::{Button, Hit, Layout};
+use crate::textutil::Harvest;
 use crate::theme::{self, GLOWS};
 
 const FONT_SIZE: f64 = 14.0;
@@ -77,6 +78,11 @@ pub struct ViewState {
     /// stretch the selection to it without waiting for the mouse to move again.
     autoscroll: Option<Retained<NSTimer>>,
     drag_pt: (f32, f32),
+    /// Autoscroll ticks so far (the self-test reads it, to tell a stalled timer from a
+    /// program that simply had nothing more to show).
+    ticks: u64,
+    /// Set while a drag runs past an edge inside a program that owns the screen.
+    harvest: Option<Harvest>,
 }
 
 define_class!(
@@ -530,6 +536,8 @@ impl TermView {
             link_opened: None,
             autoscroll: None,
             drag_pt: (0.0, 0.0),
+            ticks: 0,
+            harvest: None,
         };
         let this = Self::alloc(mtm).set_ivars(RefCell::new(state));
         let this: Retained<Self> = unsafe { msg_send![super(this), initWithFrame: frame] };
@@ -572,6 +580,7 @@ impl TermView {
     fn send(&self, bytes: &[u8]) {
         let mut st = self.ivars().borrow_mut();
         st.sel = None;
+        st.harvest = None;
         st.scroll_offset = 0;
         st.meter.key(Instant::now());
         let _ = st.pty.lock().unwrap().write(bytes);
@@ -681,11 +690,15 @@ impl TermView {
 
     fn copy_and_clear(&self) {
         self.copy_selection();
-        self.ivars().borrow_mut().sel = None;
+        let mut st = self.ivars().borrow_mut();
+        st.sel = None;
+        st.harvest = None;
+        drop(st);
         self.setNeedsDisplay(true);
     }
 
     fn select_all(&self) {
+        self.ivars().borrow_mut().harvest = None;
         let total = {
             let st = self.ivars().borrow();
             let s = st.shared.lock().unwrap();
@@ -762,8 +775,17 @@ impl TermView {
         self.ivars().borrow().link_opened.clone()
     }
 
+    /// Lines gathered from a full-screen program, ticks where nothing moved, and autoscroll
+    /// ticks in total (the self-test reads all three).
+    pub(super) fn harvest_state(&self) -> (usize, u32, u64) {
+        let st = self.ivars().borrow();
+        let (n, stuck) = st.harvest.as_ref().map(|h| (h.lines.len(), h.stuck)).unwrap_or((0, 0));
+        (n, stuck, st.ticks)
+    }
+
     pub fn has_selection(&self) -> bool {
-        matches!(self.ivars().borrow().sel, Some((a, b)) if a != b)
+        let st = self.ivars().borrow();
+        st.harvest.as_ref().is_some_and(|h| !h.lines.is_empty()) || matches!(st.sel, Some((a, b)) if a != b)
     }
 
     /// How many lines the view is scrolled back from the live screen (the self-test reads it).
@@ -872,9 +894,14 @@ impl TermView {
     fn copy_selection(&self) {
         let text = {
             let st = self.ivars().borrow();
-            let Some((a, b)) = st.sel else { return };
-            let s = st.shared.lock().unwrap();
-            s.term.text_between(a, b)
+            if let Some(h) = st.harvest.as_ref() {
+                // Gathered out of a full-screen program a screen at a time.
+                h.text()
+            } else {
+                let Some((a, b)) = st.sel else { return };
+                let s = st.shared.lock().unwrap();
+                s.term.text_between(a, b)
+            }
         };
         if text.is_empty() {
             return;
@@ -990,6 +1017,7 @@ impl TermView {
                     let mut st = self.ivars().borrow_mut();
                     st.pending_press = Some((cell, Self::mouse_mods(event), p));
                     st.sel = None;
+                    st.harvest = None;
                     drop(st);
                     self.setNeedsDisplay(true);
                     return;
@@ -1000,6 +1028,7 @@ impl TermView {
                     st.sel = Some((p, p));
                     st.selecting = true;
                     st.drag_pt = (x, y);
+                    st.harvest = None;
                     drop(st);
                     self.setNeedsDisplay(true);
                 }
@@ -1011,6 +1040,69 @@ impl TermView {
                 }
             }
         }
+    }
+
+    /// Whether the program on screen owns what we would be scrolling to. Claude Code and any
+    /// other full-screen program keep their own history and ask for the mouse; the rows above
+    /// and below are theirs, not in our scrollback.
+    fn program_owns_screen(&self) -> bool {
+        let st = self.ivars().borrow();
+        let s = st.shared.lock().unwrap();
+        s.term.mouse_tracking != 0 && (s.term.in_alt_screen() || s.term.scrollback_len() == 0)
+    }
+
+    fn visible_rows(&self) -> Vec<String> {
+        let st = self.ivars().borrow();
+        let s = st.shared.lock().unwrap();
+        (0..s.term.rows()).map(|r| s.term.row_text(r)).collect()
+    }
+
+    /// The selected text as lines, for seeding a harvest with what is already on screen.
+    fn selection_lines(&self) -> Vec<String> {
+        let st = self.ivars().borrow();
+        let Some((a, b)) = st.sel else { return Vec::new() };
+        let s = st.shared.lock().unwrap();
+        s.term.text_between(a, b).lines().map(|l| l.to_string()).collect()
+    }
+
+    /// While harvesting, everything on screen is part of the selection: the anchor scrolled
+    /// away long ago, so highlighting a range from it would be a lie.
+    fn select_whole_screen(&self) {
+        let mut st = self.ivars().borrow_mut();
+        let (base, rows, cols) = {
+            let s = st.shared.lock().unwrap();
+            (s.term.scrollback_len(), s.term.rows(), s.term.cols())
+        };
+        st.sel = Some(((base, 0), (base + rows.saturating_sub(1), cols.saturating_sub(1))));
+    }
+
+    /// One step of selecting through a full-screen program: bank whatever it uncovered since
+    /// last time, then ask it for one more notch. Returns false when it has stopped moving.
+    fn harvest_step(&self, up: bool) -> bool {
+        let now = self.visible_rows();
+        let rows = now.len();
+        if rows == 0 {
+            return false;
+        }
+        let fresh = self.ivars().borrow().harvest.is_none();
+        let seed = if fresh { self.selection_lines() } else { Vec::new() };
+        let keep_going = {
+            let mut st = self.ivars().borrow_mut();
+            match st.harvest.as_mut() {
+                None => {
+                    st.harvest = Some(Harvest::new(up, now, seed));
+                    true
+                }
+                Some(h) => h.absorb(now),
+            }
+        };
+        self.select_whole_screen();
+        if keep_going {
+            // The program asked for the mouse, so a wheel report is what it expects.
+            let cell = self.screen_cell(self.ivars().borrow().drag_pt.0, self.ivars().borrow().drag_pt.1);
+            self.report_mouse(if up { 64 } else { 65 }, cell, true);
+        }
+        keep_going
     }
 
     /// Lines to scroll per tick while a drag is held past an edge of the text area:
@@ -1067,6 +1159,7 @@ impl TermView {
     /// pointer. The end point is clamped to the visible grid, so scrolling is what lets the
     /// selection reach text that was never on screen.
     fn autoscroll_step(&self) {
+        self.ivars().borrow_mut().ticks += 1;
         let (selecting, (x, y)) = {
             let st = self.ivars().borrow();
             (st.selecting, st.drag_pt)
@@ -1074,6 +1167,14 @@ impl TermView {
         let lines = self.autoscroll_lines(y);
         if !selecting || lines == 0 {
             self.stop_autoscroll();
+            return;
+        }
+        if self.program_owns_screen() {
+            // The rows we are reaching for belong to the program, not to our scrollback.
+            if !self.harvest_step(lines > 0) {
+                self.stop_autoscroll();
+            }
+            self.setNeedsDisplay(true);
             return;
         }
         let moved = {
@@ -1204,9 +1305,12 @@ impl TermView {
         }
         let selecting = std::mem::take(&mut self.ivars().borrow_mut().selecting);
         if selecting {
-            let sel = self.ivars().borrow().sel;
+            let (sel, harvested) = {
+                let st = self.ivars().borrow();
+                (st.sel, st.harvest.is_some())
+            };
             // The selection stays on screen; copying waits for Cmd+C or the right-click menu.
-            if !matches!(sel, Some((a, b)) if a != b) {
+            if !harvested && !matches!(sel, Some((a, b)) if a != b) {
                 self.ivars().borrow_mut().sel = None;
             }
             self.setNeedsDisplay(true);
@@ -1330,6 +1434,15 @@ impl TermView {
         let shift = event.modifierFlags().contains(NSEventModifierFlags::Shift);
         let (mode, _) = self.mouse_mode();
         let (x, y) = self.point(event);
+        if self.ivars().borrow().selecting && self.program_owns_screen() {
+            // Scrolling by hand in the middle of a selection: the program repaints, so bank
+            // what it uncovers instead of letting the selection slide onto new text.
+            let up = event.scrollingDeltaY() > 0.0;
+            self.ivars().borrow_mut().drag_pt = (x, y);
+            self.harvest_step(up);
+            self.setNeedsDisplay(true);
+            return;
+        }
         if mode != 0 && !shift {
             // Wheel goes to the program as buttons 64 (up) and 65 (down).
             let cell = self.screen_cell(x, y);
