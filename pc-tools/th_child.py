@@ -22,4 +22,11 @@ time.sleep(22)
 w("\x1b[?1002l\x1b[?1006l\r\nPHASE-B mouse off\r\n"); sys.stdout.flush()
 w("\x1b]52;c;b3NjNTItb2s=\x07")           # "osc52-ok"
 w("SELECT-ME alpha beta\r\nLINK https://ineedhemp.com/shop ok\r\n"); sys.stdout.flush()
-time.sleep(40)
+time.sleep(14)
+# Phase C: several screens of numbered lines, so most of them sit in the scrollback and a
+# drag held past an edge has somewhere to scroll to.
+w("PHASE-C scrollback\r\n")
+for i in range(1, 121):
+    w(f"AUTOSCROLL-LINE-{i:03}\r\n")
+sys.stdout.flush()
+time.sleep(60)

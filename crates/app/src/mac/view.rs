@@ -19,7 +19,7 @@ use objc2_app_kit::{
 use objc2_core_graphics::CGContext;
 use objc2_foundation::{
     ns_string, NSArray, NSAttributedString, NSAttributedStringKey, NSDictionary, NSNotFound, NSObjectProtocol, NSPoint, NSRange,
-    NSRangePointer, NSRect, NSSize, NSString, NSUInteger, NSURL,
+    NSRangePointer, NSRect, NSRunLoop, NSRunLoopCommonModes, NSSize, NSString, NSTimer, NSUInteger, NSURL,
 };
 use pty::Pty;
 
@@ -72,6 +72,11 @@ pub struct ViewState {
     /// Right-click menus shown so far, and the last link opened (self-test checks).
     menus_shown: u32,
     link_opened: Option<String>,
+    /// A drag-selection held past the top or bottom edge keeps scrolling on this timer.
+    /// `drag_pt` is where the pointer last was, in view coordinates, so each tick can
+    /// stretch the selection to it without waiting for the mouse to move again.
+    autoscroll: Option<Retained<NSTimer>>,
+    drag_pt: (f32, f32),
 }
 
 define_class!(
@@ -287,6 +292,11 @@ define_class!(
         #[unsafe(method(scrollWheel:))]
         fn scroll_wheel(&self, event: &NSEvent) {
             self.on_scroll(event);
+        }
+
+        #[unsafe(method(autoscrollTick:))]
+        fn autoscroll_tick(&self, _timer: Option<&NSTimer>) {
+            self.autoscroll_step();
         }
 
         // Older-style entry point some input methods still use.
@@ -518,6 +528,8 @@ impl TermView {
             menu_link: None,
             menus_shown: 0,
             link_opened: None,
+            autoscroll: None,
+            drag_pt: (0.0, 0.0),
         };
         let this = Self::alloc(mtm).set_ivars(RefCell::new(state));
         let this: Retained<Self> = unsafe { msg_send![super(this), initWithFrame: frame] };
@@ -754,6 +766,16 @@ impl TermView {
         matches!(self.ivars().borrow().sel, Some((a, b)) if a != b)
     }
 
+    /// How many lines the view is scrolled back from the live screen (the self-test reads it).
+    pub(super) fn scroll_offset(&self) -> usize {
+        self.ivars().borrow().scroll_offset
+    }
+
+    /// The selection as absolute (line, column) pairs, lowest first (the self-test reads it).
+    pub(super) fn selection(&self) -> Option<((usize, usize), (usize, usize))> {
+        self.ivars().borrow().sel.map(|(a, b)| if a <= b { (a, b) } else { (b, a) })
+    }
+
     /// The web link under a point in the text area, following it across wrapped rows.
     fn link_at(&self, x: f32, y: f32) -> Option<String> {
         if !self.ivars().borrow().layout.text.contains(x, y) {
@@ -982,6 +1004,7 @@ impl TermView {
                     let mut st = self.ivars().borrow_mut();
                     st.sel = Some((p, p));
                     st.selecting = true;
+                    st.drag_pt = (x, y);
                     drop(st);
                     self.setNeedsDisplay(true);
                 }
@@ -992,6 +1015,92 @@ impl TermView {
                     self.ivars().borrow_mut().resizing = Some((edge, start, w.frame()));
                 }
             }
+        }
+    }
+
+    /// Lines to scroll per tick while a drag is held past an edge of the text area:
+    /// none while the pointer is inside it, then faster the further out it goes.
+    /// Positive runs back up into history, negative comes forward toward the live screen.
+    fn autoscroll_lines(&self, y: f32) -> i64 {
+        let st = self.ivars().borrow();
+        let t = st.layout.text;
+        let cell = st.cell_h.max(1.0) as f32;
+        let over = if y < t.t {
+            t.t - y
+        } else if y >= t.b {
+            -(y - t.b + 1.0)
+        } else {
+            return 0;
+        };
+        let speed = (1.0 + over.abs() / cell).min(8.0) as i64;
+        if over > 0.0 {
+            speed
+        } else {
+            -speed
+        }
+    }
+
+    /// Start or stop the drag-autoscroll for wherever the pointer is now.
+    fn update_autoscroll(&self) {
+        let (want, running) = {
+            let st = self.ivars().borrow();
+            (st.selecting, st.autoscroll.is_some())
+        };
+        let want = want && self.autoscroll_lines(self.ivars().borrow().drag_pt.1) != 0;
+        if want == running {
+            return;
+        }
+        if !want {
+            self.stop_autoscroll();
+            return;
+        }
+        let timer = unsafe {
+            NSTimer::timerWithTimeInterval_target_selector_userInfo_repeats(0.05, self, sel!(autoscrollTick:), None, true)
+        };
+        unsafe { NSRunLoop::currentRunLoop().addTimer_forMode(&timer, NSRunLoopCommonModes) };
+        self.ivars().borrow_mut().autoscroll = Some(timer);
+    }
+
+    fn stop_autoscroll(&self) {
+        let timer = self.ivars().borrow_mut().autoscroll.take();
+        if let Some(t) = timer {
+            t.invalidate();
+        }
+    }
+
+    /// One tick of a held drag: move the view a few lines, then stretch the selection to the
+    /// pointer. The end point is clamped to the visible grid, so scrolling is what lets the
+    /// selection reach text that was never on screen.
+    fn autoscroll_step(&self) {
+        let (selecting, (x, y)) = {
+            let st = self.ivars().borrow();
+            (st.selecting, st.drag_pt)
+        };
+        let lines = self.autoscroll_lines(y);
+        if !selecting || lines == 0 {
+            self.stop_autoscroll();
+            return;
+        }
+        let moved = {
+            let mut st = self.ivars().borrow_mut();
+            let max = st.shared.lock().unwrap().term.scrollback_len() as i64;
+            let before = st.scroll_offset;
+            st.scroll_offset = (before as i64 + lines).clamp(0, max) as usize;
+            st.scroll_offset != before
+        };
+        let p = self.cell_at(x, y);
+        let stretched = {
+            let mut st = self.ivars().borrow_mut();
+            match st.sel.as_mut() {
+                Some(sel) if sel.1 != p => {
+                    sel.1 = p;
+                    true
+                }
+                _ => false,
+            }
+        };
+        if moved || stretched {
+            self.setNeedsDisplay(true);
         }
     }
 
@@ -1046,7 +1155,9 @@ impl TermView {
                 st.pending_press = None;
                 st.sel = Some((p, q));
                 st.selecting = true;
+                st.drag_pt = (x, y);
                 drop(st);
+                self.update_autoscroll();
                 self.setNeedsDisplay(true);
             }
             return;
@@ -1065,15 +1176,22 @@ impl TermView {
         if self.ivars().borrow().selecting {
             let (x, y) = self.point(event);
             let p = self.cell_at(x, y);
-            if let Some(sel) = self.ivars().borrow_mut().sel.as_mut() {
-                sel.1 = p;
+            {
+                let mut st = self.ivars().borrow_mut();
+                st.drag_pt = (x, y);
+                if let Some(sel) = st.sel.as_mut() {
+                    sel.1 = p;
+                }
             }
+            // Dragged past the top or bottom edge: keep scrolling until the button comes up.
+            self.update_autoscroll();
             self.setNeedsDisplay(true);
         }
     }
 
     fn on_mouse_up(&self, event: &NSEvent) {
         let (x, y) = self.point(event);
+        self.stop_autoscroll();
         if self.ivars().borrow_mut().resizing.take().is_some() {
             return;
         }

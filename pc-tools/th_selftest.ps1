@@ -122,6 +122,45 @@ Check "link menu" ($menuL -like "Open Link=1,Copy Link=1,*") $menuL
 $opened = if (Test-Path $linkFile) { Get-Content $linkFile -Raw } else { "" }
 Check "Ctrl+click opens the link" ($opened -eq "https://ineedhemp.com/shop") $opened
 
+# Drag-autoscroll: a drag held past the top edge keeps scrolling on its own, so the copy can
+# run past what the window is showing without resizing it. Wait for the child's numbered block.
+$adump = @()
+for ($w = 0; $w -lt 60; $w++) {
+  [void][TW]::PostMessage($hw, 0x000F, [IntPtr]0, [IntPtr]0); Start-Sleep -m 400
+  $adump = Get-Content C:\Users\matt\dev\th_test_dump.txt -ErrorAction SilentlyContinue
+  if (($adump -join "`n") -match "AUTOSCROLL-LINE-120") { break }
+}
+$rows = [int]([regex]::Match((($adump | Select-String "size").Line), 'x(\d+)').Groups[1].Value)
+$firstLine = 0; $lastRow = -1
+for ($i = 0; $i -lt $rows -and $i -lt $adump.Count; $i++) {
+  if ($adump[$i] -match '^AUTOSCROLL-LINE-(\d+)') {
+    if ($firstLine -eq 0) { $firstLine = [int]$Matches[1] }
+    $lastRow = $i
+  }
+}
+$ax = $tl + 2
+$ay = [int]($tt + ($lastRow + 0.5) * $cellH)
+# Press on the last numbered row, then hold the pointer above the text and stop moving it:
+# nothing but the autoscroll can grow this selection now.
+[void][TW]::PostMessage($hw, $WM_LD, [IntPtr]1, [TW]::L($ax, $ay)); Start-Sleep -m 150
+[void][TW]::PostMessage($hw, $WM_MV, [IntPtr]1, [TW]::L($ax, $ay - 10)); Start-Sleep -m 150
+[void][TW]::PostMessage($hw, $WM_MV, [IntPtr]1, [TW]::L($ax, $tt - 20)); Start-Sleep -m 1500
+[void][TW]::PostMessage($hw, $WM_LU, [IntPtr]0, [TW]::L($ax, $tt - 20)); Start-Sleep -m 400
+[System.Windows.Forms.Clipboard]::SetText("before-autoscroll")
+[void][TW]::PostMessage($hw, $WM_RU, [IntPtr]0, [TW]::L($ax, $ay)); Start-Sleep -m 700
+[void][TW]::PostMessage($hw, $WM_KD, [IntPtr]0x28, [IntPtr]0); Start-Sleep -m 200
+[void][TW]::PostMessage($hw, $WM_KD, [IntPtr]0x0D, [IntPtr]0); Start-Sleep -m 600
+if ([TW]::FindWindow("#32768", $null) -ne [IntPtr]::Zero) { [void][TW]::PostMessage($hw, $WM_CANCELMODE, [IntPtr]0, [IntPtr]0); Start-Sleep -m 400 }
+$grab = [System.Windows.Forms.Clipboard]::GetText()
+$grabbed = ($grab -split "`r?`n").Count
+Check "a drag held above the top edge keeps scrolling" ($grabbed -gt $rows) "copied $grabbed lines; the screen holds $rows"
+$topLine = 0
+if ($grab -match '^AUTOSCROLL-LINE-(\d+)') { $topLine = [int]$Matches[1] }
+Check "the copy starts above the first line that was on screen" (($topLine -gt 0) -and ($topLine -lt $firstLine)) "copy starts at line $topLine; the screen started at line $firstLine"
+# Back down to the live screen before the rest of the checks.
+for ($i = 0; $i -lt 60; $i++) { [void][TW]::PostMessage($hw, $WM_WH, [IntPtr](-120 -shl 16), [TW]::L($ax, $ay)) }
+Start-Sleep -m 500
+
 # Resize.
 $before = ($dump | Select-String "size").Line
 $wr = New-Object TW+R; [void][TW]::GetWindowRect($hw, [ref]$wr)

@@ -78,6 +78,8 @@ the same conversation carries on with whichever you pick. Nothing is lost.
   a short summary and the answer instead of a flood of technical lines.
 - 🖱️ **Copy and paste just work.** Drag to select and it's copied. Right-click pastes. Hold Shift
   to select even inside full-screen apps.
+- 📜 **Grab a paragraph bigger than the window.** Keep dragging past the top or bottom edge and
+  the text keeps scrolling by itself, so you can take the whole thing without resizing anything.
 - 🎙️ **Dictation friendly.** Voice typing and other input methods go straight in.
 - ↘️ **Easy to resize.** Grab the little lines in the bottom corner, or any edge.
 

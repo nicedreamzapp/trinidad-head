@@ -42,12 +42,12 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     VK_HOME, VK_INSERT, VK_LEFT, VK_MENU, VK_NEXT, VK_PRIOR, VK_RIGHT, VK_SHIFT, VK_SPACE, VK_UP,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetClientRect, GetMessageW, IsZoomed,
+    CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetClientRect, GetMessageW, IsZoomed, KillTimer, SetTimer,
     LoadCursorW, PostMessageW, PostQuitMessage, RegisterClassW, SetWindowPos, SetWindowTextW, ShowWindow,
     TranslateMessage, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, IDC_ARROW, MSG, NCCALCSIZE_PARAMS, SM_CXFRAME,
     SM_CXPADDEDBORDER, SWP_FRAMECHANGED, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SW_MAXIMIZE, SW_MINIMIZE, SW_RESTORE,
     WHEEL_DELTA, WM_APP, WM_CHAR, WM_CLOSE, WM_DESTROY, WM_DPICHANGED, WM_KEYDOWN, WM_KILLFOCUS, WM_LBUTTONDOWN,
-    WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCACTIVATE, WM_NCCALCSIZE, WM_NCHITTEST, WM_PAINT, WM_RBUTTONUP,
+    WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCACTIVATE, WM_NCCALCSIZE, WM_NCHITTEST, WM_PAINT, WM_RBUTTONUP, WM_TIMER,
     WM_SETFOCUS, WM_SIZE, WM_SYSCHAR, WM_SYSKEYDOWN, WNDCLASSW, WS_EX_NOREDIRECTIONBITMAP, WS_OVERLAPPEDWINDOW,
     AppendMenuW, CreatePopupMenu, DestroyMenu, GetCursorPos, SetForegroundWindow, TrackPopupMenu, MF_GRAYED,
     MF_SEPARATOR, MF_STRING, SW_SHOWNORMAL, TPM_RETURNCMD, TPM_RIGHTBUTTON, WM_DROPFILES,
@@ -62,6 +62,8 @@ use crate::layout::{Button, Hit, Layout, GLASS};
 use crate::theme::{self, GLOWS};
 
 const WM_TERM_OUTPUT: u32 = WM_APP + 1;
+/// Ticks while a drag-selection is held past the top or bottom edge of the text.
+const AUTOSCROLL_TIMER: usize = 1;
 const WM_TERM_EXITED: u32 = WM_APP + 2;
 const CF_UNICODETEXT: u32 = 13;
 // One size up from 13 (Matt, 2026-09-17: terminal text has always been too small to read).
@@ -125,6 +127,11 @@ struct App {
     /// A press the program wants, held back until we know it is a click (sent to the program)
     /// and not a drag (a text selection here): screen cell, text point.
     pending_press: Option<((usize, usize), (usize, usize))>,
+    /// A drag-selection held past the top or bottom edge keeps scrolling on a timer.
+    /// `drag_pt` is where the pointer last was, so each tick can stretch the selection to it
+    /// without waiting for the mouse to move again.
+    autoscroll: bool,
+    drag_pt: (f32, f32),
     meter: crate::latency::Meter,
     last_title: Instant,
     started: Instant,
@@ -282,6 +289,8 @@ pub fn run() {
             skip_char: false,
             mouse_reported: false,
             pending_press: None,
+            autoscroll: false,
+            drag_pt: (0.0, 0.0),
             meter: crate::latency::Meter::new(log),
             last_title: Instant::now(),
             started,
@@ -522,6 +531,10 @@ impl App {
                     self.drop_files(HDROP(wparam.0 as *mut _));
                     Some(LRESULT(0))
                 }
+                WM_TIMER if wparam.0 == AUTOSCROLL_TIMER => {
+                    self.autoscroll_step();
+                    Some(LRESULT(0))
+                }
                 WM_MOUSEMOVE => {
                     if !self.tracking_mouse {
                         let mut tme = TRACKMOUSEEVENT {
@@ -539,6 +552,8 @@ impl App {
                             self.pending_press = None;
                             self.sel = Some((p, self.cell_at(x, y)));
                             self.selecting = true;
+                            self.drag_pt = (x, y);
+                            self.update_autoscroll();
                             self.render();
                         }
                         return Some(LRESULT(0));
@@ -554,9 +569,13 @@ impl App {
                     }
                     if self.selecting {
                         let p = self.cell_at(x, y);
+                        self.drag_pt = (x, y);
                         if let Some(sel) = self.sel.as_mut() {
                             sel.1 = p;
                         }
+                        // Dragged past the top or bottom edge: keep scrolling until the
+                        // button comes up.
+                        self.update_autoscroll();
                         self.render();
                         return Some(LRESULT(0));
                     }
@@ -599,6 +618,7 @@ impl App {
                         let p = self.cell_at(x, y);
                         self.sel = Some((p, p));
                         self.selecting = true;
+                        self.drag_pt = (x, y);
                         SetCapture(self.hwnd);
                         self.render();
                     }
@@ -606,6 +626,7 @@ impl App {
                 }
                 WM_LBUTTONUP => {
                     let (x, y) = xy(lparam);
+                    self.stop_autoscroll();
                     if let Some((cell, _)) = self.pending_press.take() {
                         // It never moved off its cell: a plain click, which the program gets.
                         let _ = ReleaseCapture();
@@ -670,6 +691,73 @@ impl App {
                     }
                 }
             }
+        }
+    }
+
+    /// Lines to scroll per tick while a drag is held past an edge of the text area:
+    /// none while the pointer is inside it, then faster the further out it goes.
+    /// Positive runs back up into history, negative comes forward toward the live screen.
+    fn autoscroll_lines(&self, y: f32) -> i64 {
+        let t = self.layout.text;
+        let over = if y < t.t {
+            t.t - y
+        } else if y >= t.b {
+            -(y - t.b + 1.0)
+        } else {
+            return 0;
+        };
+        let speed = (1.0 + over.abs() / self.cell_h.max(1.0)).min(8.0) as i64;
+        if over > 0.0 {
+            speed
+        } else {
+            -speed
+        }
+    }
+
+    /// Start or stop the drag-autoscroll for wherever the pointer is now.
+    fn update_autoscroll(&mut self) {
+        let want = self.selecting && self.autoscroll_lines(self.drag_pt.1) != 0;
+        if want == self.autoscroll {
+            return;
+        }
+        if want {
+            unsafe { SetTimer(Some(self.hwnd), AUTOSCROLL_TIMER, 50, None) };
+            self.autoscroll = true;
+        } else {
+            self.stop_autoscroll();
+        }
+    }
+
+    fn stop_autoscroll(&mut self) {
+        if self.autoscroll {
+            let _ = unsafe { KillTimer(Some(self.hwnd), AUTOSCROLL_TIMER) };
+            self.autoscroll = false;
+        }
+    }
+
+    /// One tick of a held drag: move the view a few lines, then stretch the selection to the
+    /// pointer. The end point is clamped to the visible grid, so scrolling is what lets the
+    /// selection reach text that was never on screen.
+    fn autoscroll_step(&mut self) {
+        let (x, y) = self.drag_pt;
+        let lines = self.autoscroll_lines(y);
+        if !self.selecting || lines == 0 {
+            self.stop_autoscroll();
+            return;
+        }
+        let max = self.shared.lock().unwrap().term.scrollback_len() as i64;
+        let before = self.scroll_offset;
+        self.scroll_offset = (before as i64 + lines).clamp(0, max) as usize;
+        let p = self.cell_at(x, y);
+        let stretched = match self.sel.as_mut() {
+            Some(sel) if sel.1 != p => {
+                sel.1 = p;
+                true
+            }
+            _ => false,
+        };
+        if self.scroll_offset != before || stretched {
+            self.render();
         }
     }
 

@@ -3,7 +3,8 @@
 # itself with synthetic events (nothing global), one window at a time. Results: $OUT.
 # Only processes started here are ever stopped.
 set -u
-APP_BIN="$HOME/Applications/Trinidad Head.app/Contents/MacOS/trinidad-head"
+# TH_BIN points the run at a build that is not installed yet (test before you ship).
+APP_BIN="${TH_BIN:-$HOME/Applications/Trinidad Head.app/Contents/MacOS/trinidad-head}"
 OUT="${1:-/tmp/trinidad-head-selftest.txt}"
 WORK="$(mktemp -d /tmp/th_selftest.XXXXXX)"
 : > "$OUT"

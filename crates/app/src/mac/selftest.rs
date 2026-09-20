@@ -731,6 +731,123 @@ fn full_steps() -> Vec<Step> {
         c.check("Cmd+V pastes plain when bracketed paste is off", got == b"PASTE-ONE\rline2", show(&got));
     }));
 
+    // 6b. A drag held past the top or bottom edge keeps scrolling on its own, so a selection
+    // can run further than the window shows without resizing it.
+    // (line number of the first row on screen when the drag began, rows, scroll offset)
+    let dragged: Rc<Cell<(usize, usize, usize)>> = Rc::new(Cell::new((0, 0, 0)));
+    fn line_no(text: &str) -> usize {
+        text.rsplit('-').next().and_then(|n| n.trim().parse().ok()).unwrap_or(0)
+    }
+    {
+        let rec = dragged.clone();
+        s.push(act(0.3, move |c| {
+            c.feed(b"\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?2004l\x1b[2J\x1b[H");
+            let (_cols, rows) = c.term_size();
+            // Three screens of numbered lines, so two screens end up in the scrollback.
+            let mut out = String::new();
+            for i in 1..=rows * 3 {
+                out.push_str(&format!("AUTOSCROLL-LINE-{i:03}\r\n"));
+            }
+            c.feed(out.as_bytes());
+            let first = line_no(&c.view.shared().lock().unwrap().term.row_text(0));
+            rec.set((first, rows, 0));
+            // Press on the bottom row, then hold the pointer above the text area without
+            // moving it again: nothing but the autoscroll can grow this selection now.
+            let (x, y) = c.cell_point(rows - 1, 0);
+            let top = c.view.layout().text.t as f64 - 20.0;
+            c.mouse(NSEventType::LeftMouseDown, x, y, NSEventModifierFlags::empty());
+            c.mouse(NSEventType::LeftMouseDragged, x, y - 8.0, NSEventModifierFlags::empty());
+            c.mouse(NSEventType::LeftMouseDragged, x, top, NSEventModifierFlags::empty());
+        }));
+    }
+    {
+        let rec = dragged.clone();
+        s.push(act(0.9, move |c| {
+            let (first, rows, _) = rec.get();
+            let off = c.view.scroll_offset();
+            c.check("a drag held above the top edge scrolls back by itself", off > 0, format!("scroll offset {off}"));
+            let (x, _) = c.cell_point(rows - 1, 0);
+            let top = c.view.layout().text.t as f64 - 20.0;
+            c.mouse(NSEventType::LeftMouseUp, x, top, NSEventModifierFlags::empty());
+            c.set_pasteboard("before");
+            c.key("c", "c", NSEventModifierFlags::Command, 8);
+            rec.set((first, rows, c.view.scroll_offset()));
+        }));
+    }
+    {
+        let rec = dragged.clone();
+        s.push(act(0.3, move |c| {
+            let (first, rows, _) = rec.get();
+            let got = c.pasteboard();
+            let lines = got.lines().count();
+            c.check(
+                "the copy holds more text than the window was showing",
+                lines > rows,
+                format!("copied {lines} lines; the screen holds {rows}"),
+            );
+            let top = line_no(got.lines().next().unwrap_or(""));
+            c.check(
+                "the copy starts above the first line that was on screen",
+                top > 0 && top < first,
+                format!("copy starts at line {top}; the screen started at line {first}"),
+            );
+        }));
+    }
+    {
+        let rec = dragged.clone();
+        s.push(act(0.5, move |c| {
+            let (first, rows, was) = rec.get();
+            let off = c.view.scroll_offset();
+            c.check(
+                "the autoscroll stops when the button comes up",
+                off == was,
+                format!("scroll offset drifted {was} -> {off} after the release"),
+            );
+            // Now the other way: from the top of the history, hold a drag below the bottom
+            // edge and the view must come forward to gather the rest.
+            c.scroll(40);
+            let back = c.view.scroll_offset();
+            rec.set((first, rows, back));
+            let (x, y) = c.cell_point(0, 0);
+            let bottom = c.view.layout().text.b as f64 + 20.0;
+            c.mouse(NSEventType::LeftMouseDown, x, y, NSEventModifierFlags::empty());
+            c.mouse(NSEventType::LeftMouseDragged, x, y + 8.0, NSEventModifierFlags::empty());
+            c.mouse(NSEventType::LeftMouseDragged, x, bottom, NSEventModifierFlags::empty());
+        }));
+    }
+    {
+        let rec = dragged.clone();
+        s.push(act(0.9, move |c| {
+            let (_first, rows, was) = rec.get();
+            let off = c.view.scroll_offset();
+            c.check(
+                "a drag held below the bottom edge scrolls forward by itself",
+                off < was,
+                format!("scroll offset {was} -> {off}"),
+            );
+            let (x, _) = c.cell_point(0, 0);
+            let bottom = c.view.layout().text.b as f64 + 20.0;
+            c.mouse(NSEventType::LeftMouseUp, x, bottom, NSEventModifierFlags::empty());
+            c.set_pasteboard("before");
+            c.key("c", "c", NSEventModifierFlags::Command, 8);
+            rec.set((0, rows, off));
+        }));
+    }
+    {
+        let rec = dragged.clone();
+        s.push(act(0.3, move |c| {
+            let (_f, rows, _off) = rec.get();
+            let got = c.pasteboard();
+            let lines = got.lines().count();
+            c.check(
+                "dragging downward gathers more than the window was showing",
+                lines > rows,
+                format!("copied {lines} lines; the screen holds {rows}"),
+            );
+            c.feed(b"\x1b[2J\x1b[H");
+        }));
+    }
+
     // 7. Keys.
     let keys: Vec<(&'static str, &'static str, &'static str, NSEventModifierFlags, u16, &'static [u8])> = vec![
         ("letter a", "a", "a", none, 0, b"a"),
