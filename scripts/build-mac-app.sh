@@ -47,13 +47,40 @@ cat > "$STAGE/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 # Sign with the Apple Development certificate when this Mac has one. An ad-hoc signature
-# changes with every build, and macOS then forgets Full Disk Access / Accessibility.
+# changes with every build, and macOS then forgets Full Disk Access / Accessibility, so a
+# failed signing stops the build instead of quietly installing an app that lost them.
 IDENTITY="${TH_SIGN_IDENTITY:-$(security find-identity -v -p codesigning 2>/dev/null | sed -n 's/.*) \([0-9A-F]\{40\}\) "Apple Development:.*/\1/p' | head -1)}"
-if [ -n "$IDENTITY" ] && codesign --force --deep --sign "$IDENTITY" "$STAGE" >/dev/null 2>&1; then
-  echo "signed with $IDENTITY"
-else
+sign_adhoc() {
   codesign --force --deep --sign - "$STAGE" >/dev/null 2>&1 || true
   echo "ad-hoc signed (permissions reset on each build)"
+}
+if [ -z "$IDENTITY" ]; then
+  if [ "${TH_ALLOW_ADHOC:-}" = 1 ]; then
+    sign_adhoc
+  else
+    echo "no Apple Development certificate on this Mac." >&2
+    echo "Set TH_SIGN_IDENTITY, or TH_ALLOW_ADHOC=1 to accept losing the app's permissions." >&2
+    exit 1
+  fi
+elif codesign --force --deep --sign "$IDENTITY" "$STAGE" >/dev/null 2>&1; then
+  echo "signed with $IDENTITY"
+else
+  # Over SSH the login keychain is locked in this session and codesign fails with
+  # errSecInternalComponent. Finder is in the logged-in session, so ask it to run the
+  # same command there.
+  script="/usr/bin/codesign --force --deep --sign $IDENTITY '"'"'$STAGE'"'"'"
+  if osascript -e "tell application \"Finder\" to do shell script \"$script\"" >/dev/null 2>&1 \
+     && codesign --verify --strict "$STAGE" >/dev/null 2>&1; then
+    echo "signed with $IDENTITY (through the logged-in session)"
+  elif [ "${TH_ALLOW_ADHOC:-}" = 1 ]; then
+    sign_adhoc
+  else
+    echo "codesign with $IDENTITY failed and the logged-in session could not do it either." >&2
+    echo "Refusing to ad-hoc sign: that would drop Full Disk Access, Accessibility and" >&2
+    echo "Screen Recording for Trinidad Head. Run this from a window on the Mac itself," >&2
+    echo "or set TH_ALLOW_ADHOC=1 if you really want to re-grant them by hand." >&2
+    exit 1
+  fi
 fi
 
 mkdir -p "$HOME/Applications"
