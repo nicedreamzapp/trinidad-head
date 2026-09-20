@@ -86,6 +86,14 @@ if [ -z "${ONLY:-}" ] || [ "$ONLY" = claude ]; then
 fi
 run_mode stress 150 "yes | head -2000000; CLICOLOR_FORCE=1 ls -laG /usr/bin /System/Library/Frameworks; echo STRESS-DONE; sleep 60"
 
+# Each test window is launched as a bare binary and some runs end in a kill, which leaves the
+# window's tile stuck in Matt's Dock with no process behind it — a few runs and the Dock is a
+# row of dead Trinidad Head icons. Restarting the Dock rebuilds it from what is really running;
+# it closes nothing.
+if pgrep -x Dock >/dev/null 2>&1; then
+  killall Dock 2>/dev/null && echo "NOTE restarted the Dock to clear the test windows' leftover icons" >> "$OUT"
+fi
+
 echo "---" >> "$OUT"
 echo "$(grep -c '^PASS' "$OUT") passed, $(grep -c '^FAIL' "$OUT") failed" >> "$OUT"
 cat "$OUT"
