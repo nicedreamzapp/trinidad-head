@@ -388,10 +388,21 @@ fn live_window_glows(dir: &std::path::Path) -> Vec<usize> {
 fn reader_loop(mut output: std::fs::File, shared: Arc<Mutex<Shared>>, pty: Arc<Mutex<Pty>>, hwnd_raw: isize) {
     let hwnd = HWND(hwnd_raw as *mut _);
     let mut buf = vec![0u8; 64 * 1024];
+    // Test hook: every byte the console hands us, with a marker at each read boundary. What
+    // a program writes and what we are given are not the same thing on Windows, and there is
+    // no way to tell those apart by looking at the screen afterwards.
+    let raw = std::env::var_os("TRINIDAD_HEAD_RAW").map(std::path::PathBuf::from);
     loop {
         match output.read(&mut buf) {
             Ok(0) | Err(_) => break,
             Ok(n) => {
+                if let Some(p) = &raw {
+                    use std::io::Write;
+                    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(p) {
+                        let _ = f.write_all(b"\n<<<READ>>>");
+                        let _ = f.write_all(&buf[..n]);
+                    }
+                }
                 let responses = {
                     let mut s = shared.lock().unwrap();
                     s.term.feed(&buf[..n]);

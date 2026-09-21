@@ -11,8 +11,10 @@ travel per wheel notch. A plain screen-wide scroll is the easy case; this is Mat
 
 It also streams: it starts at the top of its buffer and walks to the end, the way a chat does
 when output arrives, so the terminal sees the same thing it sees in real life — a screen that
-scrolls forward while nobody is touching the mouse. That is what the window records into
-alt_history, and that recording is what a selection scrolls back through.
+scrolls forward while nobody is touching the mouse. It streams in bursts, because that is how
+a chat really arrives: a dozen repaints land in one read, having travelled further than the
+screen is tall. That is what the window records into alt_history, and that recording is what a
+selection scrolls back through.
 """
 import ctypes, msvcrt, os, sys, time
 
@@ -38,7 +40,7 @@ def text_rows():
     return max(1, size() - FOOTER)
 
 
-def paint(top):
+def frame(top):
     global paints
     paints += 1
     h = size()
@@ -59,12 +61,22 @@ def paint(top):
             # the status line ticks, the way a spinner or a token count does
             out.append(f"  ? for shortcuts        {paints} paints")
         out.append("\r\n" if i < h - 1 else "")
-    sys.stdout.write("".join(out))
+    return "".join(out)
+
+
+def paint(top):
+    sys.stdout.write(frame(top))
     sys.stdout.flush()
 
 
 sys.stdout.write("\x1b[?1049h\x1b[?1002h\x1b[?1006h\x1b[?25l")
 # Stream from the top to the end, a chunk at a time, the way output arrives in a chat.
+#
+# Bursts are deliberately small. A program that writes repaints faster than the Windows console
+# draws does not get them delivered: conhost keeps its own screen, paints it on its own clock,
+# and sends only what it last drew. Measured 2026-09-21 with TRINIDAD_HEAD_RAW: twelve repaints
+# written back to back arrived as one, and 84 of 300 lines were never handed to the terminal at
+# all. Nothing this side of the pipe can recover those, so the test does not pretend to.
 top = 0
 paint(top)
 end = len(LINES) - text_rows()
@@ -72,9 +84,15 @@ buf = b""
 while top < end:
     if msvcrt.kbhit():
         break
-    top = min(end, top + 3)
-    paint(top)
-    time.sleep(0.005)
+    burst = []
+    for _ in range(3):
+        if top >= end:
+            break
+        top = min(end, top + 3)
+        burst.append(frame(top))
+    sys.stdout.write("".join(burst))
+    sys.stdout.flush()
+    time.sleep(0.02)
 
 while True:
     try:

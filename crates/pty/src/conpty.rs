@@ -36,6 +36,11 @@ impl Pty {
             CreatePipe(&mut out_read, &mut out_write, None, 0).map_err(to_io)?;
 
             let size = COORD { X: cols.max(1) as i16, Y: rows.max(1) as i16 };
+            // Flags stay 0. The console does not hand us what a program wrote; it keeps its own
+            // screen and sends what it last drew, on its own clock, so a program painting faster
+            // than that has repaints dropped before they reach us. 0x8, the passthrough flag
+            // Windows Terminal carries, was measured here on 2026-09-21 and changed nothing:
+            // 84 of 300 lines were still never delivered. There is no fix on this side of it.
             let hpc = CreatePseudoConsole(size, in_read, out_write, 0).map_err(to_io)?;
             // The console holds its own references now.
             let _ = CloseHandle(in_read);

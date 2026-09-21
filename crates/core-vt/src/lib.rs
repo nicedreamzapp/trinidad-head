@@ -87,8 +87,11 @@ pub struct Terminal {
     alt_history: VecDeque<Vec<Cell>>,
     /// The last screen recorded: the text to measure the next one against, and the cells so
     /// rows kept from it keep their colors.
-    alt_last: Vec<String>,
-    alt_last_cells: Vec<Vec<Cell>>,
+    last_screen: Vec<String>,
+    last_cells: Vec<Vec<Cell>>,
+    /// Rows the terminal itself scrolled into scrollback since that recording. They are in the
+    /// document already and must not be put there a second time by the screen comparison.
+    scrolled: usize,
     row: usize,
     col: usize,
     pending_wrap: bool,
@@ -138,8 +141,9 @@ impl Terminal {
             scrollback: VecDeque::new(),
             max_scrollback: 10_000,
             alt_history: VecDeque::new(),
-            alt_last: Vec::new(),
-            alt_last_cells: Vec::new(),
+            last_screen: Vec::new(),
+            last_cells: Vec::new(),
+            scrolled: 0,
             row: 0,
             col: 0,
             pending_wrap: false,
@@ -304,76 +308,100 @@ impl Terminal {
         for &b in bytes {
             self.byte(b);
         }
-        self.record_alt();
+        self.record_repaint();
         self.generation += 1;
     }
 
-    /// Keep a document of what a full-screen program has shown. Every painted screen is
-    /// measured against the one before it: rows that scrolled off the top are kept, and rows
-    /// coming back down off the top are handed back, so `alt_history` is always exactly the
-    /// text sitting above the screen. This runs on the reader thread, once per chunk read.
-    fn record_alt(&mut self) {
-        if !self.in_alt_screen() {
-            if !self.alt_last.is_empty() {
-                self.alt_last.clear();
-                self.alt_last_cells.clear();
-                self.alt_history.clear();
-            }
-            return;
-        }
+    /// Keep a document of what a program repainting the screen has shown. Every painted screen
+    /// is measured against the one before it: rows that went off the top are kept, and rows
+    /// coming back down off the top are handed back, so the history is always exactly the text
+    /// sitting above the screen.
+    ///
+    /// This is not only for the alternate screen. Claude Code never takes it: it repaints from
+    /// the top of the ordinary screen instead, so the transcript it scrolls past is overwritten
+    /// rather than scrolled, and the terminal is handed nothing. Recording only inside the
+    /// alternate screen left a chat with no document at all — a copy could hold no more than
+    /// the rows lit up at that moment, which is what Matt was pasting.
+    fn record_repaint(&mut self) {
         let now: Vec<String> = (0..self.rows)
             .map(|r| {
                 let s: String = self.grid[r].iter().filter(|c| !c.spacer).map(|c| c.ch).collect();
                 s.trim_end().to_string()
             })
             .collect();
-        if self.alt_last.is_empty() {
-            self.alt_last = now;
-            self.alt_last_cells = self.grid.clone();
+        if self.last_screen.is_empty() {
+            self.last_screen = now;
+            self.last_cells = self.grid.clone();
+            self.scrolled = 0;
             return;
         }
-        // Down the screen: rows left the top, and those are the ones to keep. Back up the
-        // screen: the program is showing text we already have above it, so hand those rows
-        // back instead of recording them twice. A jump with no overlap at all means it drew
-        // something unrelated (an overlay, a cleared screen), and nothing is recorded.
-        match moved(&self.alt_last, &now, false) {
+        if now == self.last_screen {
+            return;
+        }
+        // Down the screen: rows left the top, and those are the ones to keep — except any the
+        // terminal scrolled away itself, which are in the document already. Back up the screen:
+        // the program is showing text we already have above it, so hand those rows back instead
+        // of recording them twice. A jump with no overlap at all means it drew something
+        // unrelated (an overlay, a cleared screen), and nothing is recorded.
+        let scrolled = std::mem::take(&mut self.scrolled);
+        match moved(&self.last_screen, &now, false) {
             Moved::Rows(r) if r.len() < self.rows => {
-                for row in 0..r.len() {
+                for row in scrolled..r.len() {
                     let line = self.line_from_last(row);
-                    self.alt_history.push_back(line);
+                    self.push_history(line);
                 }
-                self.trim_alt_history();
             }
             _ => {
-                if let Moved::Rows(r) = moved(&self.alt_last, &now, true) {
-                    if r.len() < self.rows {
-                        for _ in 0..r.len().min(self.alt_history.len()) {
-                            self.alt_history.pop_back();
+                // Only a screen the program itself repainted can be rewound. Rows the terminal
+                // scrolled away are ordinary output and stay where they are.
+                if scrolled == 0 {
+                    if let Moved::Rows(r) = moved(&self.last_screen, &now, true) {
+                        if r.len() < self.rows {
+                            for _ in 0..r.len() {
+                                self.pop_history();
+                            }
                         }
                     }
                 }
             }
         }
-        self.alt_last = now;
-        self.alt_last_cells = self.grid.clone();
+        self.last_screen = now;
+        self.last_cells = self.grid.clone();
     }
 
     /// A row of the screen as it was before this paint, colors and all.
     fn line_from_last(&self, row: usize) -> Vec<Cell> {
-        match self.alt_last_cells.get(row) {
+        match self.last_cells.get(row) {
             Some(cells) => cells.clone(),
             None => self
-                .alt_last
+                .last_screen
                 .get(row)
                 .map(|t| t.chars().map(|ch| Cell { ch, ..Cell::default() }).collect())
                 .unwrap_or_default(),
         }
     }
 
-    fn trim_alt_history(&mut self) {
-        while self.alt_history.len() > self.max_scrollback {
-            self.alt_history.pop_front();
+    /// Put a row above the screen, in whichever history this screen keeps.
+    fn push_history(&mut self, line: Vec<Cell>) {
+        if self.in_alt_screen() {
+            if self.max_scrollback == 0 {
+                return;
+            }
+            if self.alt_history.len() >= self.max_scrollback {
+                self.alt_history.pop_front();
+            }
+            self.alt_history.push_back(line);
+        } else {
+            self.push_scrollback(line);
         }
+    }
+
+    fn pop_history(&mut self) {
+        if self.in_alt_screen() {
+            self.alt_history.pop_back();
+        } else {
+            self.scrollback.pop_back();
+        };
     }
 
     fn byte(&mut self, b: u8) {
@@ -701,6 +729,14 @@ impl Terminal {
     }
 
     fn set_alt_screen(&mut self, on: bool) {
+        // The two screens are different documents. Never measure one against the other, and
+        // drop what a program showed on the alternate screen once it hands the screen back.
+        self.last_screen.clear();
+        self.last_cells.clear();
+        self.scrolled = 0;
+        if !on {
+            self.alt_history.clear();
+        }
         if on && self.alt_saved.is_none() {
             let saved = SavedCursor { row: self.row, col: self.col, pen: self.pen };
             let blank = vec![vec![Cell::default(); self.cols]; self.rows];
@@ -854,7 +890,15 @@ impl Terminal {
     }
 
     fn move_to(&mut self, row: usize, col: usize) {
-        self.row = row.min(self.rows - 1);
+        let row = row.min(self.rows - 1);
+        // Going back up the screen is how a program starts its next repaint, and the grid is
+        // still holding the one that just finished. Read it here, while it is still there:
+        // several repaints arrive in a single read, and one that is only ever measured at the
+        // end of a read is one nobody recorded.
+        if row < self.row {
+            self.record_repaint();
+        }
+        self.row = row;
         self.col = col.min(self.cols - 1);
         self.pending_wrap = false;
     }
@@ -897,6 +941,7 @@ impl Terminal {
             let line = self.grid.remove(self.scroll_top);
             if self.scroll_top == 0 && self.alt_saved.is_none() {
                 self.push_scrollback(line);
+                self.scrolled += 1;
             }
             let blank = self.blank_line();
             self.grid.insert(self.scroll_bot, blank);
@@ -981,6 +1026,11 @@ impl Terminal {
     }
 
     fn erase_display(&mut self, mode: u32) {
+        // Wiping the screen, or the part of it above the cursor, throws away rows that may
+        // have scrolled past. Read them before they go.
+        if mode == 1 || mode == 2 {
+            self.record_repaint();
+        }
         match mode {
             0 => {
                 self.erase_line(0);
@@ -1279,7 +1329,7 @@ pub fn fresh_rows(old: &[String], now: &[String], up: bool) -> Option<std::ops::
 }
 
 #[cfg(test)]
-mod alt_history_tests {
+mod document_tests {
     use super::*;
 
     /// A program that owns the screen: alternate screen on, repaint the whole grid each time.
@@ -1370,4 +1420,71 @@ mod alt_history_tests {
         assert_eq!(first.iter().map(|c| c.ch).collect::<String>().trim_end(), "line 1");
         assert_ne!(first[0].attrs, Attrs::default(), "the color came with it");
     }
+
+    /// One repaint of a program that owns the screen, as bytes, without feeding them.
+    fn frame(rows: usize, first: usize) -> String {
+        let mut out = String::from("\x1b[H\x1b[2J");
+        for i in 0..rows {
+            out.push_str(&format!("\x1b[{};1Hline {}", i + 1, first + i));
+        }
+        out
+    }
+
+    #[test]
+    fn every_repaint_in_one_read_is_recorded() {
+        // Output arrives in 64K reads. When a chat streams fast, several repaints land in the
+        // same read, and each one between the first and the last is only in the grid for the
+        // length of one parse. Those rows scrolled past Matt's eyes and belong to the document
+        // just as much as the ones that happened to be showing when a read ended.
+        let mut t = start();
+        let rows = t.rows();
+        program(&mut t, 1);
+        let mut burst = String::new();
+        for k in 1..=4 {
+            burst.push_str(&frame(rows, 1 + k * 3));
+        }
+        t.feed(burst.as_bytes());
+        let want: Vec<String> = (1..=12).map(|i| format!("line {i}")).collect();
+        assert_eq!(history(&t), want, "12 rows scrolled past inside one read");
+    }
+
+    #[test]
+    fn a_repaint_of_the_ordinary_screen_is_recorded_too() {
+        // Claude Code never takes the alternate screen. It repaints from the top of the
+        // ordinary one, so text it moves past is overwritten rather than scrolled, and the
+        // terminal is handed no scrolled lines to keep. Recording only inside the alternate
+        // screen left a chat with no document at all.
+        let mut t = Terminal::new(40, 6);
+        assert!(!t.in_alt_screen());
+        program(&mut t, 1);
+        program(&mut t, 4);
+        assert_eq!(history(&t), ["line 1", "line 2", "line 3"]);
+        assert_eq!(t.scrollback_len(), 3, "kept in the ordinary scrollback, one document");
+    }
+
+    #[test]
+    fn ordinary_output_is_not_banked_twice() {
+        // Output that really scrolls is put above the screen by the scroll itself. The screen
+        // comparison must not put it there a second time.
+        let mut t = Terminal::new(40, 6);
+        for i in 1..=9 {
+            t.feed(format!("line {i}\r\n").as_bytes());
+        }
+        assert_eq!(history(&t), ["line 1", "line 2", "line 3", "line 4"]);
+    }
+
+    #[test]
+    fn a_read_that_splits_a_repaint_does_not_record_half_a_screen() {
+        // A read can also end in the middle of a repaint. The half-painted grid must not be
+        // banked as if the program had shown it.
+        let mut t = start();
+        let rows = t.rows();
+        program(&mut t, 1);
+        let f = frame(rows, 4);
+        let cut = f.len() / 2;
+        t.feed(f[..cut].as_bytes());
+        t.feed(f[cut..].as_bytes());
+        assert_eq!(history(&t), ["line 1", "line 2", "line 3"]);
+    }
 }
+
