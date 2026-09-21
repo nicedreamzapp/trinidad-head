@@ -85,6 +85,11 @@ pub struct ViewState {
     /// EXISTS and whether he can SEE it are different questions, and he only cares about the
     /// second one, so the self-test checks what was painted.
     painted_sel_rows: usize,
+    /// While a highlight is being deleted out of the program's input box, what is typed waits
+    /// here and follows the deletion (see `prompt_edit`). None the rest of the time.
+    cut_queue: Arc<Mutex<Option<Vec<u8>>>>,
+    /// Highlights deleted out of the input box so far (self-test check).
+    cuts: Arc<std::sync::atomic::AtomicU32>,
 }
 
 define_class!(
@@ -388,6 +393,40 @@ define_class!(
 );
 
 /// Copy (1) when the drag carries files or text, otherwise refuse it (0).
+/// One mouse report in the program's encoding: SGR, or the old X10 form, which can't say
+/// which button was released and stops at column 223.
+fn mouse_bytes(sgr: bool, button: u8, cell: (usize, usize), pressed: bool) -> Vec<u8> {
+    if sgr {
+        core_vt::sgr_mouse(button, cell.1, cell.0, pressed)
+    } else {
+        let b = if pressed { button } else { (button & !3) | 3 };
+        let enc = |v: usize| (32 + (v + 1).min(223)) as u8;
+        vec![0x1b, b'[', b'M', 32 + b, enc(cell.1), enc(cell.0)]
+    }
+}
+
+/// The window as `prompt_edit` sees it, from the thread that deletes a highlight.
+struct CutScreen {
+    shared: Arc<Mutex<Shared>>,
+    pty: Arc<Mutex<Pty>>,
+}
+
+impl crate::prompt_edit::Screen for CutScreen {
+    fn snapshot(&self) -> ((usize, usize), Vec<Vec<Cell>>) {
+        let s = self.shared.lock().unwrap();
+        (s.term.cursor(), (0..s.term.rows()).map(|r| s.term.line(r, 0).to_vec()).collect())
+    }
+    fn write(&self, bytes: &[u8]) {
+        let _ = self.pty.lock().unwrap().write(bytes);
+    }
+    fn click(&self, cell: (usize, usize)) {
+        let sgr = self.shared.lock().unwrap().term.mouse_sgr;
+        let mut bytes = mouse_bytes(sgr, 0, cell, true);
+        bytes.extend(mouse_bytes(sgr, 0, cell, false));
+        self.write(&bytes);
+    }
+}
+
 fn drop_operation(info: &AnyObject) -> NSUInteger {
     let pb: Retained<NSPasteboard> = unsafe { msg_send![info, draggingPasteboard] };
     let types = unsafe { NSArray::from_slice(&[NSPasteboardTypeFileURL, NSPasteboardTypeString]) };
@@ -540,6 +579,8 @@ impl TermView {
             drag_pt: (0.0, 0.0),
             ticks: 0,
             painted_sel_rows: 0,
+            cut_queue: Arc::new(Mutex::new(None)),
+            cuts: Arc::new(std::sync::atomic::AtomicU32::new(0)),
         };
         let this = Self::alloc(mtm).set_ivars(RefCell::new(state));
         let this: Retained<Self> = unsafe { msg_send![super(this), initWithFrame: frame] };
@@ -584,13 +625,70 @@ impl TermView {
         st.sel = None;
         st.scroll_offset = 0;
         st.meter.key(Instant::now());
+        let mut queue = st.cut_queue.lock().unwrap();
+        if let Some(q) = queue.as_mut() {
+            q.extend_from_slice(bytes);
+            return;
+        }
         let _ = st.pty.lock().unwrap().write(bytes);
+    }
+
+    /// Delete the highlight, the way a text box does, when it sits inside the program's input
+    /// box (Claude Code's prompt), then send `after` (typed or pasted text). Returns false,
+    /// doing nothing, for a highlight anywhere else. If the program turns out not to move its
+    /// caret on a click, nothing is deleted and `fallback` is sent instead, exactly what the
+    /// key would have sent with nothing highlighted.
+    fn try_cut(&self, after: &[u8], fallback: &[u8]) -> bool {
+        let cut = {
+            let st = self.ivars().borrow();
+            let Some((a, b)) = st.sel else { return false };
+            if a == b || st.scroll_offset != 0 || !st.cut_queue.lock().unwrap().is_none() {
+                return false;
+            }
+            let s = st.shared.lock().unwrap();
+            if s.term.mouse_tracking == 0 {
+                return false;
+            }
+            let hist = s.term.history_len();
+            if a.0 < hist || b.0 < hist {
+                return false;
+            }
+            let rows: Vec<Vec<Cell>> = (0..s.term.rows()).map(|r| s.term.line(r, 0).to_vec()).collect();
+            crate::prompt_edit::plan(&rows, s.term.cursor(), (a.0 - hist, a.1), (b.0 - hist, b.1))
+        };
+        let Some(cut) = cut else { return false };
+        let (shared, pty, queue, cuts) = {
+            let mut st = self.ivars().borrow_mut();
+            st.sel = None;
+            st.meter.key(Instant::now());
+            *st.cut_queue.lock().unwrap() = Some(Vec::new());
+            (st.shared.clone(), st.pty.clone(), st.cut_queue.clone(), st.cuts.clone())
+        };
+        let (after, fallback) = (after.to_vec(), fallback.to_vec());
+        std::thread::spawn(move || {
+            let screen = CutScreen { shared, pty: pty.clone() };
+            let done = crate::prompt_edit::run(&screen, cut);
+            if done {
+                cuts.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
+            // Hand the keyboard back under the queue's lock, so nothing typed in between can
+            // overtake what was waiting.
+            let mut q = queue.lock().unwrap();
+            let mut p = pty.lock().unwrap();
+            let _ = p.write(if done { &after } else { &fallback });
+            if let Some(waiting) = q.take() {
+                let _ = p.write(&waiting);
+            }
+        });
+        self.setNeedsDisplay(true);
+        true
     }
 
     fn insert(&self, text: &AnyObject) {
         let s = string_of(text);
         self.ivars().borrow_mut().marked.clear();
-        if !s.is_empty() {
+        // Typing over a highlight in the prompt replaces it.
+        if !s.is_empty() && !self.try_cut(s.as_bytes(), s.as_bytes()) {
             self.send(s.as_bytes());
         }
         self.setNeedsDisplay(true);
@@ -638,6 +736,15 @@ impl TermView {
             };
             // Shift+PageUp/Down scroll the history, like the Windows build.
             if let Some(first) = bare.chars().next() {
+                // Backspace or Delete with a highlight in the prompt deletes the highlight.
+                if first == '\u{7f}' || first == '\u{F728}' {
+                    let key = keys::special(first, mods, app_cursor)
+                        .or_else(|| keys::control(&chars, mods))
+                        .unwrap_or_else(|| b"\x7f".to_vec());
+                    if self.try_cut(&[], &key) {
+                        return;
+                    }
+                }
                 if mods.shift && (first == '\u{F72C}' || first == '\u{F72D}') {
                     self.scroll_page(first == '\u{F72C}');
                     return;
@@ -672,6 +779,14 @@ impl TermView {
         let key = event.charactersIgnoringModifiers().map(|s| s.to_string().to_lowercase()).unwrap_or_default();
         match key.as_str() {
             "c" => self.copy_and_clear(),
+            "x" => {
+                // Cut: copy, then take the highlight out of the prompt. Anywhere else there is
+                // nothing to cut from, so it only copies.
+                self.copy_selection();
+                if !self.try_cut(&[], &[]) {
+                    self.setNeedsDisplay(true);
+                }
+            }
             "v" => self.paste(),
             "w" => {
                 if let Some(w) = self.window() {
@@ -802,6 +917,11 @@ impl TermView {
     }
 
     /// The selection's two ends, for the self-test.
+    /// Highlights deleted out of the program's input box so far.
+    pub(super) fn cuts_for_test(&self) -> u32 {
+        self.ivars().borrow().cuts.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
     pub(super) fn selection_for_test(&self) -> Option<((usize, usize), (usize, usize))> {
         self.ivars().borrow().sel
     }
@@ -911,7 +1031,10 @@ impl TermView {
         if bracketed {
             out.extend_from_slice(b"\x1b[201~");
         }
-        self.send(&out);
+        // Pasting over a highlight in the prompt replaces it.
+        if !self.try_cut(&out, &out) {
+            self.send(&out);
+        }
     }
 
     fn copy_selection(&self) {
@@ -973,14 +1096,7 @@ impl TermView {
     /// Send one mouse report in whichever encoding the program asked for.
     fn report_mouse(&self, button: u8, cell: (usize, usize), pressed: bool) {
         let (_, sgr) = self.mouse_mode();
-        let bytes = if sgr {
-            core_vt::sgr_mouse(button, cell.1, cell.0, pressed)
-        } else {
-            // The old X10 form can't say which button was released, and stops at column 223.
-            let b = if pressed { button } else { (button & !3) | 3 };
-            let enc = |v: usize| (32 + (v + 1).min(223)) as u8;
-            vec![0x1b, b'[', b'M', 32 + b, enc(cell.1), enc(cell.0)]
-        };
+        let bytes = mouse_bytes(sgr, button, cell, pressed);
         let st = self.ivars().borrow();
         let _ = st.pty.lock().unwrap().write(&bytes);
     }

@@ -374,6 +374,8 @@ pub fn start(mode: &str, window: Retained<THWindow>, view: Retained<TermView>) {
         "stress" => stress_steps(),
         "program" | "program-chat" => program_steps(),
         "claude-select" => claude_select_steps(),
+        "prompt-edit" => prompt_edit_steps(),
+        "claude-edit" => claude_edit_steps(),
         other => {
             append(&format!("FAIL unknown self-test mode {other}"));
             return;
@@ -1069,6 +1071,332 @@ fn claude_select_steps() -> Vec<Step> {
                 None => String::new(),
             },
         );
+        append("DONE");
+        c.close_window();
+    }));
+    s
+}
+
+/// Where `word` first appears on screen, as (row, first col, last col).
+fn find_word(c: &Ctx, word: &str) -> Option<(usize, usize, usize)> {
+    let shared = c.view.shared();
+    let s = shared.lock().unwrap();
+    for r in 0..s.term.rows() {
+        let cells: Vec<char> = s.term.line(r, 0).iter().filter(|x| !x.spacer).map(|x| x.ch).collect();
+        let line: String = cells.iter().collect();
+        if let Some(byte) = line.find(word) {
+            let col = line[..byte].chars().count();
+            return Some((r, col, col + word.chars().count() - 1));
+        }
+    }
+    None
+}
+
+/// Drag across `from`..=`to` the way a hand does, then let go.
+fn highlight(c: &Ctx, from: (usize, usize), to: (usize, usize)) {
+    c.drag_cells(from, to, NSEventModifierFlags::empty());
+}
+
+fn highlight_word(c: &Ctx, word: &str) -> bool {
+    match find_word(c, word) {
+        Some((r, a, b)) => {
+            highlight(c, (r, a), (r, b));
+            true
+        }
+        None => {
+            append(&format!("NOTE {word} is not on screen:\n{}", c.screen_text()));
+            false
+        }
+    }
+}
+
+fn backspace(c: &Ctx) {
+    c.key("\u{7f}", "\u{7f}", NSEventModifierFlags::empty(), 51);
+}
+
+/// Deleting a highlight inside a program's input box, against `scripts/prompt-child.py`: a
+/// stand-in for Claude Code's prompt that writes its exact text to PROMPT_CHILD_OUT, so every
+/// check reads the program's own buffer.
+fn prompt_edit_steps() -> Vec<Step> {
+    fn buffer() -> String {
+        std::env::var_os("PROMPT_CHILD_OUT").and_then(|p| std::fs::read_to_string(p).ok()).unwrap_or_default()
+    }
+    fn expect(name: &'static str, want: impl Fn() -> String + 'static) -> Step {
+        let want = Rc::new(want);
+        let w2 = want.clone();
+        poll(0.1, 30, move |_| buffer() == want(), move |c, ok| c.check(name, ok, format!("buffer {:?}, wanted {:?}", buffer(), w2())))
+    }
+    let long: &'static str = "w01 w02 w03 w04 w05 w06 w07 w08 w09 w10 w11 w12 w13 w14 w15 w16 w17 w18 w19 w20 \
+w21 w22 w23 w24 w25 w26 w27 w28 w29 w30 w31 w32 w33 w34 w35 w36 w37 w38 w39 w40";
+    let mut s: Vec<Step> = Vec::new();
+    s.push(act(0.2, |c| place_window(c, 700.0, 420.0)));
+    s.push(poll(0.2, 40, |c| c.screen_text().contains('❯'), |c, ok| c.check("the stand-in prompt painted", ok, c.screen_text())));
+    s.push(act(0.3, |c| {
+        c.set_pasteboard("alpha bravo charlie delta echo");
+        c.key("v", "v", NSEventModifierFlags::Command, 9);
+    }));
+    s.push(expect("text pasted into the prompt", || "alpha bravo charlie delta echo".into()));
+
+    // Backspace with nothing highlighted is still just Backspace.
+    s.push(act(0.3, backspace));
+    s.push(expect("Backspace with no highlight deletes one character", || "alpha bravo charlie delta ech".into()));
+
+    s.push(act(0.3, |c| {
+        highlight_word(c, "bravo");
+    }));
+    s.push(act(0.3, |c| {
+        c.check("dragging over the prompt text highlights it", c.has_sel(), "no selection");
+        backspace(c);
+    }));
+    s.push(expect("highlight a word, Backspace deletes the word", || "alpha  charlie delta ech".into()));
+    s.push(act(0.1, |c| {
+        c.check("the highlight is gone after the delete", !c.has_sel(), "still highlighted");
+        c.check("the delete ran through the prompt path", c.view.cuts_for_test() == 1, format!("{} cuts", c.view.cuts_for_test()));
+    }));
+
+    // Typing over a highlight replaces it.
+    s.push(act(0.3, |c| {
+        highlight_word(c, "charlie");
+    }));
+    s.push(act(0.3, |c| c.key("X", "x", NSEventModifierFlags::Shift, 7)));
+    s.push(expect("typing over a highlight replaces it", || "alpha  X delta ech".into()));
+
+    // Fast typing right behind it lands after the replacement, in order.
+    s.push(act(0.3, |c| {
+        highlight_word(c, "delta");
+    }));
+    s.push(act(0.0, |c| {
+        c.key("a", "a", NSEventModifierFlags::empty(), 0);
+        c.key("b", "b", NSEventModifierFlags::empty(), 11);
+        c.key("c", "c", NSEventModifierFlags::empty(), 8);
+    }));
+    s.push(expect("keys typed while a highlight is being replaced all land, in order", || "alpha  X abc ech".into()));
+
+    // Pasting over a highlight replaces it.
+    s.push(act(0.3, |c| {
+        highlight_word(c, "ech");
+    }));
+    s.push(act(0.3, |c| {
+        c.set_pasteboard("PASTED");
+        c.key("v", "v", NSEventModifierFlags::Command, 9);
+    }));
+    s.push(expect("pasting over a highlight replaces it", || "alpha  X abc PASTED".into()));
+
+    // Forward Delete does the same as Backspace.
+    s.push(act(0.3, |c| {
+        highlight_word(c, "abc");
+    }));
+    s.push(act(0.3, |c| c.key("\u{F728}", "\u{F728}", NSEventModifierFlags::Function, 117)));
+    s.push(expect("highlight, forward Delete deletes it", || "alpha  X  PASTED".into()));
+
+    // Cmd+X copies and deletes.
+    s.push(act(0.3, |c| {
+        highlight_word(c, "PASTED");
+    }));
+    s.push(act(0.3, |c| c.key("x", "x", NSEventModifierFlags::Command, 7)));
+    s.push(expect("Cmd+X takes the highlight out of the prompt", || "alpha  X  ".into()));
+    s.push(act(0.1, |c| c.check("Cmd+X put it on the clipboard", c.pasteboard() == "PASTED", c.pasteboard())));
+
+    // A highlight out in the transcript is not the prompt's: Backspace stays one character.
+    s.push(act(0.3, |c| {
+        highlight_word(c, "TRANSCRIPT-LINE-1");
+    }));
+    s.push(act(0.3, backspace));
+    s.push(expect("a highlight outside the prompt leaves the prompt alone (one Backspace)", || "alpha  X ".into()));
+
+    // Highlight everything from the ❯ mark to past the end of the text: all of it goes.
+    s.push(act(0.3, |c| {
+        let Some((r, _, _)) = find_word(c, "alpha") else { return };
+        let (cols, _) = c.term_size();
+        highlight(c, (r, 0), (r, cols - 1));
+    }));
+    s.push(act(0.3, backspace));
+    s.push(expect("highlighting the whole line, mark included, and Backspace empties the prompt", String::new));
+
+    // Text that wraps onto several rows: highlight from a word on one row to a word on the next.
+    s.push(act(0.3, move |c| {
+        c.set_pasteboard(long);
+        c.key("v", "v", NSEventModifierFlags::Command, 9);
+    }));
+    s.push(expect("a long text wraps in the prompt", move || long.into()));
+    let picked: Rc<RefCell<(String, String)>> = Rc::new(RefCell::new((String::new(), String::new())));
+    {
+        let picked = picked.clone();
+        s.push(act(0.3, move |c| {
+            // The first word on the second text row, and one a few words before it.
+            let Some((r1, _, _)) = find_word(c, "w01") else { return };
+            let shared = c.view.shared();
+            let row2: String = shared.lock().unwrap().term.row_text(r1 + 1);
+            let Some(first2) = row2.split_whitespace().next().map(str::to_string) else { return };
+            let n: usize = first2[1..].parse().unwrap_or(10);
+            let a = format!("w{:02}", n.saturating_sub(3));
+            let b = format!("w{:02}", n + 2);
+            append(&format!("NOTE wrap test: highlighting {a} (row {r1}) through {b} (row {})", r1 + 1));
+            let (Some(pa), Some(pb)) = (find_word(c, &a), find_word(c, &b)) else { return };
+            highlight(c, (pa.0, pa.1), (pb.0, pb.2));
+            *picked.borrow_mut() = (a, b);
+        }));
+    }
+    s.push(act(0.3, backspace));
+    {
+        let picked = picked.clone();
+        s.push(poll(
+            0.1,
+            30,
+            {
+                let picked = picked.clone();
+                move |_| {
+                    let (a, b) = picked.borrow().clone();
+                    !a.is_empty() && buffer() == cut_words(long, &a, &b)
+                }
+            },
+            move |c, ok| {
+                let (a, b) = picked.borrow().clone();
+                c.check("a highlight across a wrapped line deletes exactly what was highlighted", ok, format!("buffer {:?}, wanted {:?}", buffer(), cut_words(long, &a, &b)));
+            },
+        ));
+    }
+    s.push(act(0.2, |c| {
+        c.shot("prompt-edit-final");
+        append("DONE");
+        c.close_window();
+    }));
+    s
+}
+
+/// `text` with everything from the start of word `a` to the end of word `b` removed.
+fn cut_words(text: &str, a: &str, b: &str) -> String {
+    let (Some(i), Some(j)) = (text.find(a), text.find(b)) else { return String::from("?") };
+    format!("{}{}", &text[..i], &text[j + b.len()..])
+}
+
+/// The same deletes against REAL Claude Code. Nothing is ever submitted, so no tokens.
+fn claude_edit_steps() -> Vec<Step> {
+    fn prompt_row(c: &Ctx) -> String {
+        // Claude writes a no-break space after the mark.
+        c.screen_text().lines().find(|l| l.starts_with('\u{276F}')).unwrap_or("").replace('\u{a0}', " ")
+    }
+    let mut s: Vec<Step> = Vec::new();
+    s.push(act(0.2, |c| place_window(c, 900.0, 520.0)));
+    s.push(poll(
+        0.5,
+        40,
+        |c| {
+            let t = c.screen_text();
+            claude_main_ui(&t) || t.contains("trust this folder")
+        },
+        |c, _| {
+            if c.screen_text().contains("trust this folder") {
+                append("NOTE Claude asked to trust the test folder; answered yes");
+                c.key("\u{F701}", "\u{F701}", NSEventModifierFlags::Function, 125);
+                c.key("\r", "\r", NSEventModifierFlags::empty(), 36);
+            }
+        },
+    ));
+    s.push(poll(0.5, 40, |c| claude_main_ui(&c.screen_text()), |c, ok| c.check("Claude Code is up for the edit test", ok, c.screen_text())));
+    s.push(act(1.0, |c| {
+        for ch in "alpha bravo charlie delta".chars() {
+            let t = ch.to_string();
+            c.key(&t, &t, NSEventModifierFlags::empty(), 0);
+        }
+    }));
+    s.push(poll(0.2, 20, |c| prompt_row(c).contains("alpha bravo charlie delta"), |c, ok| c.check("typed into Claude's prompt", ok, prompt_row(c))));
+    s.push(act(0.3, |c| {
+        highlight_word(c, "bravo");
+    }));
+    s.push(act(0.3, |c| {
+        let shared = c.view.shared();
+        let cursor = shared.lock().unwrap().term.cursor();
+        append(&format!("NOTE before Backspace: selection {:?}, caret {cursor:?}", c.view.selection_for_test()));
+        backspace(c);
+    }));
+    s.push(act(1.0, |c| append(&format!("NOTE cuts after Backspace: {}", c.view.cuts_for_test()))));
+    s.push(poll(
+        0.1,
+        30,
+        |c| prompt_row(c).trim_end() == "\u{276F} alpha  charlie delta",
+        |c, ok| c.check("in Claude Code, highlight a word + Backspace deletes the word", ok, prompt_row(c)),
+    ));
+    s.push(act(0.3, |c| {
+        highlight_word(c, "charlie");
+    }));
+    s.push(act(0.3, |c| c.key("Z", "z", NSEventModifierFlags::Shift, 6)));
+    s.push(poll(
+        0.1,
+        30,
+        |c| prompt_row(c).trim_end() == "\u{276F} alpha  Z delta",
+        |c, ok| c.check("in Claude Code, typing over a highlight replaces it", ok, prompt_row(c)),
+    ));
+    s.push(act(0.3, |c| {
+        let Some((r, _, _)) = find_word(c, "alpha") else { return };
+        let (cols, _) = c.term_size();
+        highlight(c, (r, 0), (r, cols - 1));
+    }));
+    s.push(act(0.3, backspace));
+    s.push(poll(
+        0.1,
+        30,
+        |c| !c.screen_text().contains("alpha") && !c.screen_text().contains("delta"),
+        |c, ok| c.check("in Claude Code, highlighting the whole prompt + Backspace empties it", ok, prompt_row(c)),
+    ));
+    // A prompt long enough to wrap: highlight from a word on the first row to one on the next.
+    let long: &'static str = "w01 w02 w03 w04 w05 w06 w07 w08 w09 w10 w11 w12 w13 w14 w15 w16 w17 w18 w19 w20 \
+w21 w22 w23 w24 w25 w26 w27 w28 w29 w30 w31 w32 w33 w34 w35 w36 w37 w38 w39 w40";
+    fn prompt_words(c: &Ctx) -> Vec<String> {
+        let t = c.screen_text();
+        let lines: Vec<&str> = t.lines().collect();
+        let Some(i) = lines.iter().position(|l| l.starts_with('\u{276F}')) else { return Vec::new() };
+        let mut out = Vec::new();
+        for l in &lines[i..] {
+            if l.starts_with('\u{2500}') {
+                break;
+            }
+            out.extend(l.chars().skip(2).collect::<String>().split_whitespace().map(str::to_string));
+        }
+        out
+    }
+    s.push(act(0.5, move |c| {
+        for ch in long.chars() {
+            let t = ch.to_string();
+            c.key(&t, &t, NSEventModifierFlags::empty(), 0);
+        }
+    }));
+    s.push(poll(0.2, 30, move |c| prompt_words(c).join(" ") == long, move |c, ok| c.check("a long prompt wraps in Claude", ok, prompt_words(c).join(" "))));
+    let picked: Rc<RefCell<(String, String)>> = Rc::new(RefCell::new((String::new(), String::new())));
+    {
+        let picked = picked.clone();
+        s.push(act(0.3, move |c| {
+            let Some((r1, _, _)) = find_word(c, "w01") else { return };
+            let row2: String = c.view.shared().lock().unwrap().term.row_text(r1 + 1);
+            let Some(first2) = row2.split_whitespace().next().map(str::to_string) else { return };
+            let n: usize = first2[1..].parse().unwrap_or(10);
+            let a = format!("w{:02}", n.saturating_sub(3));
+            let b = format!("w{:02}", n + 2);
+            append(&format!("NOTE Claude wrap test: highlighting {a} through {b}"));
+            let (Some(pa), Some(pb)) = (find_word(c, &a), find_word(c, &b)) else { return };
+            highlight(c, (pa.0, pa.1), (pb.0, pb.2));
+            *picked.borrow_mut() = (a, b);
+        }));
+    }
+    s.push(act(0.3, backspace));
+    {
+        let p2 = picked.clone();
+        s.push(poll(
+            0.1,
+            30,
+            move |c| {
+                let (a, b) = p2.borrow().clone();
+                let want: Vec<String> = cut_words(long, &a, &b).split_whitespace().map(str::to_string).collect();
+                !a.is_empty() && prompt_words(c) == want
+            },
+            move |c, ok| {
+                let (a, b) = picked.borrow().clone();
+                c.check("in Claude Code, a highlight across a wrapped line deletes exactly that", ok, format!("prompt {:?}, wanted {:?}", prompt_words(c).join(" "), cut_words(long, &a, &b)));
+            },
+        ));
+    }
+    s.push(act(0.2, |c| {
+        c.shot("claude-edit-final");
         append("DONE");
         c.close_window();
     }));

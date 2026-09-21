@@ -17,6 +17,8 @@ mod layout;
 mod theme;
 #[allow(dead_code)]
 mod textutil;
+#[allow(dead_code)]
+mod prompt_edit;
 #[cfg(any(windows, target_os = "macos"))]
 mod update;
 #[cfg(windows)]
