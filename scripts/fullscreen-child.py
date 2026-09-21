@@ -8,8 +8,12 @@ window and it repaints.
 `CHILD_SHAPE=chat` paints the shape Claude Code really has: a prompt box pinned to the bottom
 that never scrolls, a status line inside it that changes on every repaint, and three lines of
 travel per wheel notch. A plain screen-wide scroll is the easy case; this is Matt's case.
+
+It also streams: it starts at the top of its buffer and walks to the end, the way a chat does
+when output arrives, so the terminal sees the same thing it sees in real life — a screen that
+scrolls forward while nobody is touching the mouse. That is what the window records.
 """
-import os, sys, termios, tty
+import os, select, sys, termios, tty
 
 LINES = [f"PROGRAM-LINE-{i:03}" for i in range(1, 301)]
 rows = int(os.environ.get("LINES") or 24)
@@ -58,10 +62,17 @@ def paint(top):
 fd = sys.stdin.fileno()
 tty.setraw(fd)
 sys.stdout.write("\x1b[?1049h\x1b[?1002h\x1b[?1006h\x1b[?25l")
-top = len(LINES) - text_rows()     # start at the end, the way a chat does
+# Stream from the top to the end, a chunk at a time, the way output arrives in a chat.
+top = 0
 paint(top)
-
+end = len(LINES) - text_rows()
 buf = b""
+while top < end:
+    if select.select([fd], [], [], 0.02)[0]:
+        break
+    top = min(end, top + 3)
+    paint(top)
+
 while True:
     try:
         data = os.read(fd, 4096)

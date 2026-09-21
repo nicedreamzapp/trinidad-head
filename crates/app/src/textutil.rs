@@ -120,10 +120,10 @@ impl Harvest {
     /// Bank whatever the program uncovered since the last step. False once it has stopped
     /// moving, which is how a drag against the top of a chat ends.
     pub fn absorb(&mut self, now: Vec<String>) -> bool {
-        let fresh = match moved(&self.last, &now, self.up) {
-            Moved::Still => None,
-            Moved::Rows(r) => Some(now[r].to_vec()),
-            Moved::Jumped => Some(now.clone()),
+        let fresh = match core_vt::fresh_rows(&self.last, &now, self.up) {
+            None => None,
+            Some(r) if r.len() == now.len() => Some(now.clone()),
+            Some(r) => Some(now[r].to_vec()),
         };
         match fresh {
             None => self.stuck += 1,
@@ -149,86 +149,6 @@ impl Harvest {
             lines.pop();
         }
         lines.join("\n")
-    }
-}
-
-/// What the screen did between two snapshots.
-enum Moved {
-    /// Nothing travelled: the program has nothing more to show.
-    Still,
-    /// These rows of the new screen were not on the old one, in reading order.
-    Rows(std::ops::Range<usize>),
-    /// Nothing lines up at all, so the program jumped somewhere unrelated.
-    Jumped,
-}
-
-/// The longest unbroken run of rows that line up when the screen is read as having travelled
-/// `k` rows, given in NEW-screen coordinates, with the count of non-blank rows in it. Blank
-/// rows line up with each other by accident, so they do not vote.
-fn run_at(old: &[String], new: &[String], up: bool, k: usize) -> Option<(usize, usize, usize)> {
-    let rows = old.len().min(new.len());
-    if k >= rows {
-        return None;
-    }
-    let mut best: Option<(usize, usize, usize)> = None;
-    let mut start: Option<usize> = None;
-    let mut weight = 0usize;
-    let keep = |best: &mut Option<(usize, usize, usize)>, s: usize, e: usize, w: usize| {
-        if best.is_none_or(|(_, _, bw)| w > bw) {
-            *best = Some((s, e, w));
-        }
-    };
-    for i in 0..rows - k {
-        let (o, n) = if up { (i, i + k) } else { (i + k, i) };
-        if old[o] == new[n] {
-            if start.is_none() {
-                start = Some(n);
-                weight = 0;
-            }
-            if !new[n].trim().is_empty() {
-                weight += 1;
-            }
-            if i + 1 == rows - k {
-                keep(&mut best, start.unwrap(), n + 1, weight);
-            }
-        } else if let Some(s) = start.take() {
-            keep(&mut best, s, n, weight);
-        }
-    }
-    best
-}
-
-/// Read two snapshots as one screen that travelled. A full-screen program usually pins part of
-/// the grid — Claude Code keeps its prompt box and status line at the bottom, and they never
-/// scroll — so only the rows that really moved may be banked. Whole-screen matching would find
-/// no overlap at all against a pinned box and call every repaint a jump, which is how the same
-/// screen ended up in the clipboard over and over.
-fn moved(old: &[String], new: &[String], up: bool) -> Moved {
-    let rows = old.len().min(new.len());
-    if rows == 0 || old[..rows] == new[..rows] {
-        return Moved::Still;
-    }
-    let still = run_at(old, new, up, 0).map_or(0, |(_, _, w)| w);
-    let mut best: Option<(usize, usize, usize, usize)> = None;
-    for k in 1..rows {
-        if let Some((s, e, w)) = run_at(old, new, up, k) {
-            if best.is_none_or(|(_, _, _, bw)| w > bw) {
-                best = Some((k, s, e, w));
-            }
-        }
-    }
-    match best {
-        // Two rows in a row is the least that tells travel apart from a coincidence.
-        Some((k, s, e, w)) if w > still && w >= 2 => {
-            let range = if up { s.saturating_sub(k)..s } else { e..(e + k).min(new.len()) };
-            if range.is_empty() {
-                Moved::Still
-            } else {
-                Moved::Rows(range)
-            }
-        }
-        _ if still > 0 => Moved::Still,
-        _ => Moved::Jumped,
     }
 }
 
@@ -401,7 +321,7 @@ impl Collect {
     /// Put whatever the program uncovered on top of what we have. False when it has stopped
     /// moving or there is already more than anyone will select.
     pub fn absorb(&mut self, text: Vec<String>, cells: Vec<Vec<core_vt::Cell>>) -> bool {
-        match fresh_rows(&self.last, &text, true) {
+        match core_vt::fresh_rows(&self.last, &text, true) {
             None => self.stuck += 1,
             Some(r) => {
                 self.stuck = 0;
@@ -415,14 +335,7 @@ impl Collect {
     }
 }
 
-/// Which rows of `now` were not on `old`, in new-screen coordinates, or None if nothing moved.
-pub fn fresh_rows(old: &[String], now: &[String], up: bool) -> Option<std::ops::Range<usize>> {
-    match moved(old, now, up) {
-        Moved::Still => None,
-        Moved::Rows(r) => Some(r),
-        Moved::Jumped => Some(0..now.len()),
-    }
-}
+
 
 #[cfg(test)]
 mod frozen_tests {

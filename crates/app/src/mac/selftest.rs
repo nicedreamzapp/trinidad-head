@@ -264,6 +264,26 @@ impl Ctx {
         }
     }
 
+    /// A picture of the window exactly as it looks right now, so a person can look at the
+    /// frame instead of taking a passing check's word for it.
+    fn shot(&self, name: &str) {
+        let rect = self.view.bounds();
+        if let Some(rep) = self.view.bitmapImageRepForCachingDisplayInRect(rect) {
+            self.view.cacheDisplayInRect_toBitmapImageRep(rect, &rep);
+            if let Some(data) = unsafe {
+                rep.representationUsingType_properties(objc2_app_kit::NSBitmapImageFileType::PNG, &objc2_foundation::NSDictionary::new())
+            } {
+                let dir = std::env::var("TRINIDAD_HEAD_SHOTS").unwrap_or_else(|_| "/tmp".into());
+                let _ = std::fs::write(format!("{dir}/{name}.png"), data.to_vec());
+            }
+        }
+    }
+
+    /// Rows the window actually painted a highlight on in the last frame.
+    fn highlighted_rows(&self) -> usize {
+        self.view.painted_sel_rows()
+    }
+
     fn has_sel(&self) -> bool {
         self.view.has_selection()
     }
@@ -1005,16 +1025,16 @@ fn claude_select_steps() -> Vec<Step> {
         append(&format!("NOTE at the drag: mouse tracking {mode}, alt screen {alt}, scrollback {back}, selecting {}, selection {}", c.view.selecting_for_test(), c.has_sel()));
         std::fs::write("/tmp/th_claude_select_screen.txt", c.screen_text()).ok();
     }));
-    s.push(poll(0.25, 60, |c| c.view.is_frozen(), |c, ok| {
-        let (rows, freezes, ticks) = c.view.frozen_state();
-        c.check("the drag past the edge puts up a still picture of Claude Code", ok, format!("{rows} rows, {freezes} pictures, {ticks} ticks"));
-        append(&format!("NOTE still picture holds {rows} rows after {ticks} ticks"));
+    s.push(poll(0.1, 20, |c| c.view.scroll_offset() > 0, |c, ok| {
+        let (kept, ticks) = c.view.history_state();
+        c.check("the window starts scrolling Claude's text as soon as the drag passes the edge", ok, format!("offset {} after {ticks} ticks", c.view.scroll_offset()));
+        append(&format!("NOTE window holds {kept} rows of Claude above the screen"));
     }));
     s.push(act(1.5, |_| {}));
     s.push(act(0.1, |c| {
         let (_cols, rows) = c.term_size();
-        let (frozen_rows, _freezes, ticks) = c.view.frozen_state();
-        append(&format!("NOTE picture {frozen_rows} rows over {ticks} ticks"));
+        let (kept, ticks) = c.view.history_state();
+        append(&format!("NOTE {kept} rows kept, offset {} over {ticks} ticks", c.view.scroll_offset()));
         append(&format!("NOTE after the hold: selecting {}, selection {}", c.view.selecting_for_test(), c.has_sel()));
         c.check("the selection survived Claude Code repainting", c.has_sel(), "no selection");
         let (x, _) = c.cell_point(rows - 1, 0);
@@ -1190,42 +1210,56 @@ fn program_steps() -> Vec<Step> {
             },
         ));
     }
-    // A poll runs the next step 0.1s later, so the gathering gets steps of its own.
-    s.push(poll(0.25, 60, |c| c.view.is_frozen(), |c, ok| {
-        let (rows, freezes, ticks) = c.view.frozen_state();
-        c.check("the drag past the edge puts up a still picture", ok, format!("{rows} rows, {freezes} pictures, {ticks} ticks"));
-        append(&format!("NOTE still picture holds {rows} rows after {ticks} ticks"));
+    // The drag is held past the edge. The window must start moving AT ONCE — Matt's complaint
+    // was a pause and then a jump — and it must move ITSELF, not scroll the program.
+    s.push(poll(0.1, 20, |c| c.view.scroll_offset() > 0, |c, ok| {
+        let (kept, ticks) = c.view.history_state();
+        c.check("the window starts scrolling as soon as the drag passes the edge", ok, format!("offset {} after {ticks} ticks", c.view.scroll_offset()));
+        append(&format!("NOTE window holds {kept} rows above the screen"));
     }));
-    // Let the drag sit there a while: a still picture must actually stay still.
     {
         let rec = start.clone();
-        s.push(act(1.5, move |c| {
+        s.push(act(1.2, move |c| {
             let (first, _rows) = rec.get();
             let now = top_line(c);
             c.check(
-                "the program is left where it was, not scrolled away under him",
+                "the program is left alone while he drags",
                 now == first,
-                format!("top line {first} -> {now}"),
+                format!("its top line went {first} -> {now}"),
             );
+            c.check("the window kept scrolling while the button was held", c.view.scroll_offset() > 2, format!("offset {}", c.view.scroll_offset()));
+            let (kept, _) = c.view.history_state();
+            append(&format!("NOTE selection {:?}, offset {}, kept {kept}, rows {}", c.view.selection_for_test(), c.view.scroll_offset(), c.term_size().1));
+            c.check("the rows he is dragging over are highlighted", c.highlighted_rows() > 0, format!("{} rows painted", c.highlighted_rows()));
         }));
     }
+    // Further back still: the highlight has to hold all the way, not just at the start.
     {
         let rec = start.clone();
-        s.push(act(1.0, move |c| {
-            let (first, rows) = rec.get();
-            let now = top_line(c);
-            c.check("and it stays there while the drag is held", now == first, format!("top line {first} -> {now}"));
-            c.check("the selection is still there", c.has_sel(), "no selection");
-            let (x, _) = c.cell_point(rows / 2, 0);
-            let top = c.view.layout().text.t as f64 - 20.0;
-            c.mouse(NSEventType::LeftMouseUp, x, top, NSEventModifierFlags::empty());
-            c.key("c", "c", NSEventModifierFlags::Command, 8);
+        s.push(act(2.0, move |c| {
+            let _ = rec.get();
+            let (kept, _) = c.view.history_state();
+            append(&format!("NOTE deep: selection {:?}, offset {}, kept {kept}, painted {}", c.view.selection_for_test(), c.view.scroll_offset(), c.highlighted_rows()));
+            c.shot("drag-held");
+            c.check(
+                "the highlight holds as it keeps scrolling back",
+                c.highlighted_rows() > 0,
+                format!("{} rows painted at offset {}", c.highlighted_rows(), c.view.scroll_offset()),
+            );
         }));
     }
     {
         let rec = start.clone();
         s.push(act(0.4, move |c| {
             let (first, rows) = rec.get();
+            let (x, _) = c.cell_point(rows / 2, 0);
+            let top = c.view.layout().text.t as f64 - 20.0;
+            c.mouse(NSEventType::LeftMouseUp, x, top, NSEventModifierFlags::empty());
+            c.shot("after-release");
+            c.key("c", "c", NSEventModifierFlags::Command, 8);
+            std::thread::sleep(std::time::Duration::from_millis(250));
+            c.shot("after-copy");
+            c.check("the highlight stays after copying", c.highlighted_rows() > 0, format!("{} rows painted", c.highlighted_rows()));
             let got = c.pasteboard();
             let lines: Vec<&str> = got.lines().filter(|l| l.starts_with("PROGRAM-LINE-")).collect();
             c.check(
@@ -1259,17 +1293,15 @@ fn program_steps() -> Vec<Step> {
             );
         }));
     }
-    // Escape puts the picture away and the live program comes back untouched.
-    s.push(act(0.3, |c| {
-        c.key("\u{1b}", "\u{1b}", NSEventModifierFlags::empty(), 53);
-    }));
+    // Typing goes back to the live screen, and the program is untouched by all of it.
+    s.push(act(0.3, |c| c.key("x", "x", NSEventModifierFlags::empty(), 7)));
     {
         let rec = start.clone();
         s.push(act(0.4, move |c| {
             let (first, _rows) = rec.get();
-            c.check("escape puts the still picture away", !c.view.is_frozen(), "still frozen");
+            c.check("typing snaps back to the live screen", c.view.scroll_offset() == 0, format!("offset {}", c.view.scroll_offset()));
             c.check(
-                "and the program is exactly where it was left",
+                "and the program was never scrolled by any of it",
                 top_line(c) == first,
                 format!("top line {first} -> {}", top_line(c)),
             );

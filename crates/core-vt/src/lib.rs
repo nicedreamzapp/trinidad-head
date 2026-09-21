@@ -80,6 +80,15 @@ pub struct Terminal {
     alt_saved: Option<(Vec<Vec<Cell>>, SavedCursor)>,
     scrollback: VecDeque<Vec<Cell>>,
     pub max_scrollback: usize,
+    /// What a full-screen program has shown and scrolled past. A program on the alternate
+    /// screen keeps its own text and gives the terminal no scrollback at all, so without this
+    /// the window holds only the rows lit up right now — and selecting anything taller than
+    /// the window becomes a trick instead of a drag. Recorded by reading its scroll.
+    alt_history: VecDeque<Vec<Cell>>,
+    /// The last screen recorded: the text to measure the next one against, and the cells so
+    /// rows kept from it keep their colors.
+    alt_last: Vec<String>,
+    alt_last_cells: Vec<Vec<Cell>>,
     row: usize,
     col: usize,
     pending_wrap: bool,
@@ -128,6 +137,9 @@ impl Terminal {
             alt_saved: None,
             scrollback: VecDeque::new(),
             max_scrollback: 10_000,
+            alt_history: VecDeque::new(),
+            alt_last: Vec::new(),
+            alt_last_cells: Vec::new(),
             row: 0,
             col: 0,
             pending_wrap: false,
@@ -172,30 +184,51 @@ impl Terminal {
     pub fn scrollback_len(&self) -> usize {
         self.scrollback.len()
     }
+
+    /// Rows above the screen that can be scrolled back to: our own scrollback normally, and
+    /// what we recorded of a full-screen program's scroll while one owns the screen.
+    pub fn history_len(&self) -> usize {
+        if self.in_alt_screen() {
+            self.alt_history.len()
+        } else {
+            self.scrollback.len()
+        }
+    }
+
+    fn history(&self, i: usize) -> &[Cell] {
+        if self.in_alt_screen() {
+            &self.alt_history[i]
+        } else {
+            &self.scrollback[i]
+        }
+    }
     pub fn in_alt_screen(&self) -> bool {
         self.alt_saved.is_some()
     }
 
     /// A visible row, `offset` lines scrolled back into history (0 = live screen).
     pub fn line(&self, row: usize, offset: usize) -> &[Cell] {
-        let offset = offset.min(self.scrollback.len());
+        let len = self.history_len();
+        let offset = offset.min(len);
         if row < offset {
-            &self.scrollback[self.scrollback.len() - offset + row]
+            self.history(len - offset + row)
         } else {
-            &self.grid[row - offset]
+            let r = row - offset;
+            &self.grid[r.min(self.rows - 1)]
         }
     }
 
     /// All lines, history first: indexes run from 0 to `total_lines() - 1`.
     pub fn total_lines(&self) -> usize {
-        self.scrollback.len() + self.rows
+        self.history_len() + self.rows
     }
 
     pub fn abs_line(&self, i: usize) -> &[Cell] {
-        if i < self.scrollback.len() {
-            &self.scrollback[i]
+        let len = self.history_len();
+        if i < len {
+            self.history(i)
         } else {
-            &self.grid[(i - self.scrollback.len()).min(self.rows - 1)]
+            &self.grid[(i - len).min(self.rows - 1)]
         }
     }
 
@@ -271,7 +304,76 @@ impl Terminal {
         for &b in bytes {
             self.byte(b);
         }
+        self.record_alt();
         self.generation += 1;
+    }
+
+    /// Keep a document of what a full-screen program has shown. Every painted screen is
+    /// measured against the one before it: rows that scrolled off the top are kept, and rows
+    /// coming back down off the top are handed back, so `alt_history` is always exactly the
+    /// text sitting above the screen. This runs on the reader thread, once per chunk read.
+    fn record_alt(&mut self) {
+        if !self.in_alt_screen() {
+            if !self.alt_last.is_empty() {
+                self.alt_last.clear();
+                self.alt_last_cells.clear();
+                self.alt_history.clear();
+            }
+            return;
+        }
+        let now: Vec<String> = (0..self.rows)
+            .map(|r| {
+                let s: String = self.grid[r].iter().filter(|c| !c.spacer).map(|c| c.ch).collect();
+                s.trim_end().to_string()
+            })
+            .collect();
+        if self.alt_last.is_empty() {
+            self.alt_last = now;
+            self.alt_last_cells = self.grid.clone();
+            return;
+        }
+        // Down the screen: rows left the top, and those are the ones to keep. Back up the
+        // screen: the program is showing text we already have above it, so hand those rows
+        // back instead of recording them twice. A jump with no overlap at all means it drew
+        // something unrelated (an overlay, a cleared screen), and nothing is recorded.
+        match moved(&self.alt_last, &now, false) {
+            Moved::Rows(r) if r.len() < self.rows => {
+                for row in 0..r.len() {
+                    let line = self.line_from_last(row);
+                    self.alt_history.push_back(line);
+                }
+                self.trim_alt_history();
+            }
+            _ => {
+                if let Moved::Rows(r) = moved(&self.alt_last, &now, true) {
+                    if r.len() < self.rows {
+                        for _ in 0..r.len().min(self.alt_history.len()) {
+                            self.alt_history.pop_back();
+                        }
+                    }
+                }
+            }
+        }
+        self.alt_last = now;
+        self.alt_last_cells = self.grid.clone();
+    }
+
+    /// A row of the screen as it was before this paint, colors and all.
+    fn line_from_last(&self, row: usize) -> Vec<Cell> {
+        match self.alt_last_cells.get(row) {
+            Some(cells) => cells.clone(),
+            None => self
+                .alt_last
+                .get(row)
+                .map(|t| t.chars().map(|ch| Cell { ch, ..Cell::default() }).collect())
+                .unwrap_or_default(),
+        }
+    }
+
+    fn trim_alt_history(&mut self) {
+        while self.alt_history.len() > self.max_scrollback {
+            self.alt_history.pop_front();
+        }
     }
 
     fn byte(&mut self, b: u8) {
@@ -1073,5 +1175,199 @@ mod tests {
         t.feed(b"\x1b]133;A\x07$ \x1b]133;B\x07ls\r\n\x1b]133;C\x07out\r\n\x1b]133;D;0\x07");
         let kinds: Vec<_> = t.marks.iter().map(|m| m.1.clone()).collect();
         assert_eq!(kinds, vec![Mark::PromptStart, Mark::CommandStart, Mark::OutputStart, Mark::CommandEnd(Some(0))]);
+    }
+}
+
+// ---------------------------------------------------------------------------------------
+// Reading a full-screen program's scroll.
+//
+// A program that owns the screen (Claude Code, a pager) keeps its own text and repaints the
+// whole grid when it moves. Nothing tells us it scrolled, so we work it out by comparing one
+// painted screen with the next: the rows that line up say how far it travelled, and the rest
+// are what it uncovered. That is what lets the terminal keep a real document of what such a
+// program has shown, instead of holding only the fifty rows that happen to be lit up.
+
+/// What the screen did between two snapshots.
+enum Moved {
+    /// Nothing travelled: the program has nothing more to show.
+    Still,
+    /// These rows of the new screen were not on the old one, in reading order.
+    Rows(std::ops::Range<usize>),
+    /// Nothing lines up at all, so the program jumped somewhere unrelated.
+    Jumped,
+}
+
+/// The longest unbroken run of rows that line up when the screen is read as having travelled
+/// `k` rows, given in NEW-screen coordinates, with the count of non-blank rows in it. Blank
+/// rows line up with each other by accident, so they do not vote.
+fn run_at(old: &[String], new: &[String], up: bool, k: usize) -> Option<(usize, usize, usize)> {
+    let rows = old.len().min(new.len());
+    if k >= rows {
+        return None;
+    }
+    let mut best: Option<(usize, usize, usize)> = None;
+    let mut start: Option<usize> = None;
+    let mut weight = 0usize;
+    let keep = |best: &mut Option<(usize, usize, usize)>, s: usize, e: usize, w: usize| {
+        if best.is_none_or(|(_, _, bw)| w > bw) {
+            *best = Some((s, e, w));
+        }
+    };
+    for i in 0..rows - k {
+        let (o, n) = if up { (i, i + k) } else { (i + k, i) };
+        if old[o] == new[n] {
+            if start.is_none() {
+                start = Some(n);
+                weight = 0;
+            }
+            if !new[n].trim().is_empty() {
+                weight += 1;
+            }
+            if i + 1 == rows - k {
+                keep(&mut best, start.unwrap(), n + 1, weight);
+            }
+        } else if let Some(s) = start.take() {
+            keep(&mut best, s, n, weight);
+        }
+    }
+    best
+}
+
+/// Read two snapshots as one screen that travelled. A full-screen program usually pins part of
+/// the grid — Claude Code keeps its prompt box and status line at the bottom, and they never
+/// scroll — so only the rows that really moved may be banked. Whole-screen matching would find
+/// no overlap at all against a pinned box and call every repaint a jump, which is how the same
+/// screen ended up in the clipboard over and over.
+fn moved(old: &[String], new: &[String], up: bool) -> Moved {
+    let rows = old.len().min(new.len());
+    if rows == 0 || old[..rows] == new[..rows] {
+        return Moved::Still;
+    }
+    let still = run_at(old, new, up, 0).map_or(0, |(_, _, w)| w);
+    let mut best: Option<(usize, usize, usize, usize)> = None;
+    for k in 1..rows {
+        if let Some((s, e, w)) = run_at(old, new, up, k) {
+            if best.is_none_or(|(_, _, _, bw)| w > bw) {
+                best = Some((k, s, e, w));
+            }
+        }
+    }
+    match best {
+        // Two rows in a row is the least that tells travel apart from a coincidence.
+        Some((k, s, e, w)) if w > still && w >= 2 => {
+            let range = if up { s.saturating_sub(k)..s } else { e..(e + k).min(new.len()) };
+            if range.is_empty() {
+                Moved::Still
+            } else {
+                Moved::Rows(range)
+            }
+        }
+        _ if still > 0 => Moved::Still,
+        _ => Moved::Jumped,
+    }
+}
+
+
+/// Which rows of `now` were not on `old`, in new-screen coordinates, or None if nothing moved.
+/// A range covering the whole screen means the program jumped somewhere unrelated.
+pub fn fresh_rows(old: &[String], now: &[String], up: bool) -> Option<std::ops::Range<usize>> {
+    match moved(old, now, up) {
+        Moved::Still => None,
+        Moved::Rows(r) => Some(r),
+        Moved::Jumped => Some(0..now.len()),
+    }
+}
+
+#[cfg(test)]
+mod alt_history_tests {
+    use super::*;
+
+    /// A program that owns the screen: alternate screen on, repaint the whole grid each time.
+    fn program(t: &mut Terminal, first: usize) {
+        let mut out = String::from("\x1b[H\x1b[2J");
+        for i in 0..t.rows() {
+            out.push_str(&format!("\x1b[{};1Hline {}", i + 1, first + i));
+        }
+        t.feed(out.as_bytes());
+    }
+
+    fn start() -> Terminal {
+        let mut t = Terminal::new(40, 6);
+        t.feed(b"\x1b[?1049h");
+        assert!(t.in_alt_screen());
+        t
+    }
+
+    fn history(t: &Terminal) -> Vec<String> {
+        (0..t.history_len())
+            .map(|i| t.abs_line(i).iter().map(|c| c.ch).collect::<String>().trim_end().to_string())
+            .collect()
+    }
+
+    #[test]
+    fn it_keeps_what_the_program_scrolls_past() {
+        let mut t = start();
+        program(&mut t, 1);
+        assert_eq!(t.history_len(), 0, "nothing has scrolled yet");
+        program(&mut t, 4);
+        assert_eq!(history(&t), ["line 1", "line 2", "line 3"]);
+        program(&mut t, 7);
+        assert_eq!(history(&t), ["line 1", "line 2", "line 3", "line 4", "line 5", "line 6"]);
+    }
+
+    #[test]
+    fn the_document_reads_as_one_piece() {
+        let mut t = start();
+        program(&mut t, 1);
+        program(&mut t, 4);
+        // History plus screen: line 1 through line 9, in order, selectable as one run.
+        assert_eq!(t.total_lines(), 9);
+        assert_eq!(t.text_between((0, 0), (8, 6)), "line 1\nline 2\nline 3\nline 4\nline 5\nline 6\nline 7\nline 8\nline 9");
+    }
+
+    #[test]
+    fn scrolling_back_up_hands_the_rows_back() {
+        let mut t = start();
+        program(&mut t, 1);
+        program(&mut t, 4);
+        assert_eq!(t.history_len(), 3);
+        program(&mut t, 1);
+        assert_eq!(t.history_len(), 0, "the same rows are on screen again, not recorded twice");
+        assert_eq!(t.total_lines(), 6);
+    }
+
+    #[test]
+    fn a_repaint_that_does_not_move_records_nothing() {
+        let mut t = start();
+        program(&mut t, 1);
+        for _ in 0..5 {
+            program(&mut t, 1);
+        }
+        assert_eq!(t.history_len(), 0);
+    }
+
+    #[test]
+    fn leaving_the_alternate_screen_drops_the_recording() {
+        let mut t = start();
+        program(&mut t, 1);
+        program(&mut t, 4);
+        assert_eq!(t.history_len(), 3);
+        t.feed(b"\x1b[?1049l");
+        assert!(!t.in_alt_screen());
+        assert_eq!(t.history_len(), t.scrollback_len(), "back to our own scrollback");
+    }
+
+    #[test]
+    fn the_recording_keeps_the_colors_it_was_painted_in() {
+        let mut t = start();
+        // Row one is red, the rest are the usual lines, then the program scrolls three rows.
+        t.feed(b"\x1b[H\x1b[2J\x1b[31mline 1\x1b[0m");
+        for i in 1..t.rows() {
+            t.feed(format!("\x1b[{};1Hline {}", i + 1, i + 1).as_bytes());
+        }
+        program(&mut t, 4);
+        let first = t.abs_line(0);
+        assert_eq!(first.iter().map(|c| c.ch).collect::<String>().trim_end(), "line 1");
+        assert_ne!(first[0].attrs, Attrs::default(), "the color came with it");
     }
 }
