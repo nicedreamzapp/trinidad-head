@@ -1086,11 +1086,13 @@ impl TermView {
                 }
                 if in_body {
                     let p = self.cell_at(x, y);
+                    // Both of these read the view, so they happen before it is borrowed.
+                    let cell = self.screen_cell(x, y);
                     let mut st = self.ivars().borrow_mut();
                     st.sel = Some((p, p));
                     st.selecting = true;
                     st.drag_pt = (x, y);
-                    st.press_cell = Some(self.screen_cell(x, y));
+                    st.press_cell = Some(cell);
                     st.frozen = None;
                     drop(st);
                     self.setNeedsDisplay(true);
