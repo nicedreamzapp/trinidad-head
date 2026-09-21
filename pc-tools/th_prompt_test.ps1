@@ -74,7 +74,7 @@ function Drag($g, $r1, $c1, $r2, $c2) {
 }
 function HighlightWord($word) {
   $g = Geo; $f = Find $g $word
-  if ($f) { Drag $g $f[0] $f[1] $f[0] $f[2] } else { $results.Add("NOTE $word is not on screen") }
+  if ($f) { Drag $g $f[0] $f[1] $f[0] $f[2] } else { $results.Add("NOTE $word is not on screen: rows $($g.rows), lines $($g.d.Count): " + (($g.d | Where-Object { $_ -ne "" }) -join " | ")) }
 }
 function Char($c) { [void][TP]::PostMessage($hw, $WM_CH, [IntPtr][int][char]$c, [IntPtr]0); Start-Sleep -m 30 }
 function Backspace { [void][TP]::PostMessage($hw, $WM_CH, [IntPtr]8, [IntPtr]0); Start-Sleep -m 50 }
