@@ -37,7 +37,7 @@ Start-Sleep -m 500
 function Dump {
   for ($k = 0; $k -lt 10; $k++) {
     [void][TP]::PostMessage($hw, $WM_PAINT, [IntPtr]0, [IntPtr]0); Start-Sleep -m 300
-    $d = Get-Content $dumpFile -ErrorAction SilentlyContinue
+    $d = Get-Content $dumpFile -Encoding UTF8 -ErrorAction SilentlyContinue
     if ($d -and ($d -join "`n") -match "text [\d\.-]+,") { return ,$d }
   }
   return ,@()
@@ -81,13 +81,15 @@ function Backspace { [void][TP]::PostMessage($hw, $WM_CH, [IntPtr]8, [IntPtr]0);
 # Typed a character at a time: Ctrl+Shift+V reads the real key state, which posted messages
 # cannot fake. Typing goes through the same path a paste does.
 function TypeText($t) { foreach ($ch in $t.ToCharArray()) { Char $ch } }
-function Cuts { $d = Get-Content $dumpFile -ErrorAction SilentlyContinue; $m = [regex]::Match(($d -join "`n"), 'prompt cuts (\d+)'); if ($m.Success) { [int]$m.Groups[1].Value } else { -1 } }
+function Cuts { $d = Get-Content $dumpFile -Encoding UTF8 -ErrorAction SilentlyContinue; $m = [regex]::Match(($d -join "`n"), 'prompt cuts (\d+)'); if ($m.Success) { [int]$m.Groups[1].Value } else { -1 } }
 
 for ($w = 0; $w -lt 30; $w++) { $g = Geo; if (($g.d -join "`n") -match [char]0x276F) { break } }
-Check "the stand-in prompt painted" ((($g.d -join "`n") -match [char]0x276F)) ""
+Check "the stand-in prompt painted" ((($g.d -join "`n") -match [char]0x276F)) (($g.d | Select-Object -Last 8) -join " | ")
 
 TypeText "alpha bravo charlie delta echo"
 Check "text typed into the prompt" (WaitBuf "alpha bravo charlie delta echo") (Buf)
+$g = Geo
+$results.Add("NOTE screen after typing: " + (($g.d | Where-Object { $_ -ne "" }) -join " | "))
 
 Backspace
 Check "Backspace with no highlight deletes one character" (WaitBuf "alpha bravo charlie delta ech") (Buf)
