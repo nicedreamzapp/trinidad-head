@@ -107,7 +107,17 @@ view or an AI that reads the screen.
 
 ## 📦 Get it
 
-There's no installer yet. Trinidad Head is young and changing fast. To build it yourself:
+**[⬇️ Download for Mac](https://github.com/nicedreamzapp/trinidad-head/releases/latest/download/Trinidad-Head-mac.zip)**
+(Apple Silicon and Intel, macOS 14+) &nbsp;·&nbsp;
+**[⬇️ Download for Windows](https://github.com/nicedreamzapp/trinidad-head/releases/latest/download/Trinidad-Head-windows.zip)**
+(Windows 10 and 11)
+
+- **Mac:** unzip and drag Trinidad Head into Applications. The first time, macOS may say it can't
+  check the app: open System Settings, then Privacy & Security, and click **Open Anyway**. Once only.
+- **Windows:** unzip and double-click Trinidad Head.exe. If a blue "protected your PC" box shows,
+  click **More info**, then **Run anyway**.
+
+Or build it yourself:
 
 **Mac**
 
