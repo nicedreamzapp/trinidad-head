@@ -79,8 +79,8 @@ the same conversation carries on with whichever you pick. Nothing is lost.
 - 🖱️ **Copy and paste just work.** Drag to select, then Cmd+C (Ctrl+C on Windows) or right-click
   for Copy, Paste and Select All. Selecting works even inside full-screen apps like Claude Code.
 - ⌫ **Edit what you typed like a text box.** Highlight words in Claude Code's prompt and press
-  Backspace to delete them, or just type or paste over them. No other terminal can do this, because
-  the prompt belongs to Claude, not the terminal. Trinidad Head moves Claude's cursor for you and
+  Backspace to delete them, or just type or paste over them. Normally a terminal can't, because the
+  prompt belongs to Claude, not the terminal. Trinidad Head moves Claude's cursor for you and
   deletes exactly what you highlighted, even across wrapped lines.
 - 📜 **Grab a paragraph bigger than the window.** Keep dragging past the top or bottom edge and
   the text keeps scrolling by itself, so you can take the whole thing without resizing anything.
