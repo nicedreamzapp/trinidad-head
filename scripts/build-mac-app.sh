@@ -3,6 +3,7 @@
 # Each launch opens its own window:  open -n -a "Trinidad Head" --args <command>
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# TH_HARDENED=1 signs with the hardened runtime and a timestamp, which notarization requires.
 # TH_APP_OUT puts the app somewhere else (the release packager uses it); TH_UNIVERSAL=1 builds
 # one app that runs on both Apple Silicon and Intel Macs.
 APP="${TH_APP_OUT:-$HOME/Applications/Trinidad Head.app}"
@@ -73,7 +74,7 @@ if [ -z "$IDENTITY" ]; then
     echo "Set TH_SIGN_IDENTITY, or TH_ALLOW_ADHOC=1 to accept losing the app's permissions." >&2
     exit 1
   fi
-elif codesign --force --deep --sign "$IDENTITY" "$STAGE" >/dev/null 2>&1; then
+elif codesign --force --deep --sign "$IDENTITY" ${TH_HARDENED:+--options runtime --timestamp --entitlements "$ROOT/assets/release.entitlements"} "$STAGE" >/dev/null 2>&1; then
   echo "signed with $IDENTITY"
 else
   # Over SSH the login keychain is locked in this session, so codesign fails with
