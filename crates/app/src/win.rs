@@ -1938,6 +1938,7 @@ impl App {
                         self.layout.text.b,
                     ));
                     out.push_str(&format!("prompt cuts {} ({})\n", self.cuts.load(Ordering::SeqCst), self.cut_note));
+                    out.push_str(&format!("cell {:.3}x{:.3}\n", self.cell_w, self.cell_h));
                     if let Some((p50, p95, n)) = self.meter.stats() {
                         out.push_str(&format!("typing delay median {p50:.1} ms, p95 {p95:.1} ms over {n} keys\n"));
                     }

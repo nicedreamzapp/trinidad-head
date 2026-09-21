@@ -55,7 +55,9 @@ function Geo {
   $cols = [int]$size.Groups[1].Value; $rows = [int]$size.Groups[2].Value
   $l = [double]$rect.Groups[1].Value; $t = [double]$rect.Groups[2].Value
   $r = [double]$rect.Groups[3].Value; $b = [double]$rect.Groups[4].Value
-  return @{ d = $d; cols = $cols; rows = $rows; l = $l; t = $t; cw = ($r - $l) / $cols; ch = ($b - $t) / $rows }
+  # The window's real cell size: the text rectangle is rarely a whole number of cells.
+  $cell = [regex]::Match(($d -join "`n"), 'cell ([\d\.]+)x([\d\.]+)')
+  return @{ d = $d; cols = $cols; rows = $rows; l = $l; t = $t; cw = [double]$cell.Groups[1].Value; ch = [double]$cell.Groups[2].Value }
 }
 function Find($g, $word) {
   for ($i = 0; $i -lt $g.rows -and $i -lt $g.d.Count; $i++) {
