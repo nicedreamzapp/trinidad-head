@@ -112,8 +112,8 @@ view or an AI that reads the screen.
 **[⬇️ Download for Windows](https://github.com/nicedreamzapp/trinidad-head/releases/latest/download/Trinidad-Head-windows.zip)**
 (Windows 10 and 11)
 
-- **Mac:** unzip and drag Trinidad Head into Applications. The first time, macOS may say it can't
-  check the app: open System Settings, then Privacy & Security, and click **Open Anyway**. Once only.
+- **Mac:** unzip, drag Trinidad Head into Applications and open it. It's signed and notarized by
+  Apple, so there's no warning.
 - **Windows:** unzip and double-click Trinidad Head.exe. If a blue "protected your PC" box shows,
   click **More info**, then **Run anyway**.
 
