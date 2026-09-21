@@ -531,10 +531,11 @@ impl App {
                 WM_MOUSEWHEEL => {
                     let delta = ((wparam.0 >> 16) as u16 as i16) as i32;
                     // Scrolled back into the document, the wheel moves OUR window, even while a
-                    // full-screen program has the mouse — same as the Mac. The selection is
-                    // anchored to document lines, so it stays on the words it was put on.
+                    // full-screen program has the mouse — the same rule as the Mac's on_scroll.
+                    // The selection is anchored to document lines, so it stays on the words it
+                    // was put on. (Shift is already handled: mouse_mode() returns 0 for it.)
                     let scrolled_back = self.scroll_offset > 0;
-                    if self.mouse_mode() > 0 && !self.selecting && !scrolled_back {
+                    if self.mouse_mode() > 0 && !scrolled_back {
                         // Wheel events go to the program as buttons 64 (up) / 65 (down).
                         let mut pt = POINT { x: (lparam.0 & 0xFFFF) as u16 as i16 as i32, y: ((lparam.0 >> 16) & 0xFFFF) as u16 as i16 as i32 };
                         let _ = ScreenToClient(self.hwnd, &mut pt);
