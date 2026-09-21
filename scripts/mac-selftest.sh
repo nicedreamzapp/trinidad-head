@@ -12,8 +12,35 @@ WORK="$(mktemp -d /tmp/th_selftest.XXXXXX)"
 
 CLIP="$WORK/clipboard.txt"
 pbpaste > "$CLIP" 2>/dev/null
-restore_clipboard() { pbcopy < "$CLIP"; }
-trap restore_clipboard EXIT
+
+# How many Trinidad Head tiles the Dock shows right now. A tile with no process behind it is a
+# dead one, and the Dock keeps it until it is restarted.
+dock_tiles() {
+  osascript -e 'tell application "System Events" to tell process "Dock" to get name of UI elements of list 1' 2>/dev/null \
+    | tr ',' '\n' | grep -c 'Trinidad Head'
+}
+# pgrep -f does not match this binary on macOS 27 (it finds nothing while ps lists it), so the
+# count comes from ps. Match the executable path, not the command line: any shell sitting in the
+# trinidad-head folder has the name in its arguments and would be counted as a window.
+th_running() { ps -axo comm | grep -c 'trinidad-head$'; }
+
+# Every test window is the bare binary, and a window that has to be killed outright leaves its
+# tile stuck in the Dock with nothing behind it: a few runs and the Dock is a row of dead
+# Trinidad Head icons. Restarting the Dock rebuilds it from what is really running and closes
+# nothing. This lives in the exit trap on purpose, because a run that fails early or is
+# interrupted is exactly the run that killed a window, so it is the run that must clean up.
+clear_dead_tiles() {
+  local tiles running
+  tiles="$(dock_tiles)"
+  running="$(th_running)"
+  [ "$tiles" -le "$running" ] && return 0
+  pgrep -x Dock >/dev/null 2>&1 || return 0
+  killall Dock 2>/dev/null || return 0
+  echo "NOTE restarted the Dock: it had $tiles Trinidad Head tiles for $running open windows" >> "$OUT"
+}
+
+on_exit() { pbcopy < "$CLIP"; clear_dead_tiles; }
+trap on_exit EXIT
 
 # Records everything typed into the window, raw, for byte-level checks.
 cat > "$WORK/capture.py" <<'PY'
@@ -48,7 +75,18 @@ run_mode() {
   sleep 1
   if kill -0 "$pid" 2>/dev/null; then
     grep -q '^DONE' "$res" || echo "FAIL $mode: test window did not finish in ${limit}s" >> "$res"
-    kill "$pid" 2>/dev/null; sleep 1; kill -9 "$pid" 2>/dev/null
+    # SIGTERM closes the window the normal way, which takes the Dock tile with it. Give it real
+    # time to do that: SIGKILL skips the close and strands the tile, so it is the last resort.
+    kill "$pid" 2>/dev/null
+    local gone=0
+    for _ in 1 2 3 4 5 6 7 8; do
+      kill -0 "$pid" 2>/dev/null || { gone=1; break; }
+      sleep 1
+    done
+    if [ "$gone" = 0 ]; then
+      kill -9 "$pid" 2>/dev/null
+      echo "NOTE $mode: window ignored SIGTERM and had to be killed outright" >> "$res"
+    fi
   elif ! grep -q '^DONE' "$res"; then
     echo "FAIL $mode: test window quit early (see $WORK/$mode.log)" >> "$res"
   fi
@@ -95,12 +133,14 @@ if [ -z "${ONLY:-}" ] || [ "$ONLY" = claude ]; then
 fi
 run_mode stress 150 "yes | head -2000000; CLICOLOR_FORCE=1 ls -laG /usr/bin /System/Library/Frameworks; echo STRESS-DONE; sleep 60"
 
-# Each test window is launched as a bare binary and some runs end in a kill, which leaves the
-# window's tile stuck in Matt's Dock with no process behind it — a few runs and the Dock is a
-# row of dead Trinidad Head icons. Restarting the Dock rebuilds it from what is really running;
-# it closes nothing.
-if pgrep -x Dock >/dev/null 2>&1; then
-  killall Dock 2>/dev/null && echo "NOTE restarted the Dock to clear the test windows' leftover icons" >> "$OUT"
+# The run is over, so every tile beyond the windows still open is a dead one this run left in
+# Matt's Dock. The exit trap clears them either way; this is the check that says so out loud,
+# because a run that strands tiles is a run whose windows did not close the way they should.
+tiles_left="$(dock_tiles)"; windows_left="$(th_running)"
+if [ "$tiles_left" -le "$windows_left" ]; then
+  echo "PASS every test window took its Dock icon with it" >> "$OUT"
+else
+  echo "FAIL $((tiles_left - windows_left)) dead Trinidad Head icons left in the Dock" >> "$OUT"
 fi
 
 echo "---" >> "$OUT"
