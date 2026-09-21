@@ -63,7 +63,7 @@ function CloseSpawned($windows, $log) {
 }
 # TEST-CUT (pc-tools/th_cleanup_test.ps1 reads everything above this line)
 try {
-$p = StartWin "C:\Users\matt\dev\pctools\th_child.py"
+$p = StartWin "C:\Users\matt\dev\trinidad-head\pc-tools\th_child.py"
 Start-Sleep 3
 $p.Refresh(); $hw = $p.MainWindowHandle
 # Park the test window off to the side so Matt's real mouse can't land in it mid-test.
@@ -104,7 +104,7 @@ $dropFile = "C:\Users\matt\dev\th drop test.png"; Set-Content $dropFile "x"
 $wr1 = New-Object TW+R; [void][TW]::GetWindowRect($hw, [ref]$wr1)
 [void][TW]::SetWindowPos($hw, [IntPtr](-1), 300, 150, 0, 0, 0x11); Start-Sleep -m 600
 $tp = New-Object TW+P; $tp.X = $tl + 200; $tp.Y = $tt + 120; [void][TW]::ClientToScreen($hw, [ref]$tp)
-$dragOut = & powershell -NoProfile -STA -ExecutionPolicy Bypass -File C:\Users\matt\dev\pctools\th_drag.ps1 -File $dropFile -SX 150 -SY 150 -TX $tp.X -TY $tp.Y
+$dragOut = & powershell -NoProfile -STA -ExecutionPolicy Bypass -File C:\Users\matt\dev\trinidad-head\pc-tools\th_drag.ps1 -File $dropFile -SX 150 -SY 150 -TX $tp.X -TY $tp.Y
 [void][TW]::SetWindowPos($hw, [IntPtr](-2), -5000, 200, 0, 0, 0x11); Start-Sleep -m 600
 $log = if (Test-Path C:\Users\matt\dev\th_test_input.log) { (Get-Content C:\Users\matt\dev\th_test_input.log) -replace "^b'", "" -replace "'$", "" -join "" } else { "" }
 Check "mouse press/release reported" ($log -match '\[<0;\d+;\d+M' -and $log -match '\[<0;\d+;\d+m') ""
@@ -199,8 +199,12 @@ Start-Sleep -m 500
 # so none of that text is in our scrollback and grid coordinates cannot express the selection.
 Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
 Start-Sleep 1
-$q = StartWin "C:\Users\matt\dev\pctools\th_fullscreen_child.py"
-Start-Sleep 3
+# CHILD_SHAPE=chat gives the stand-in Claude Code's real shape: a prompt box pinned to the
+# bottom that never scrolls and three lines of travel per notch. A plain screen-wide scroll is
+# the easy case; the pinned box is what defeated the old screen-comparing harvest.
+$env:CHILD_SHAPE = "chat"
+$q = StartWin "C:\Users\matt\dev\trinidad-head\pc-tools\th_fullscreen_child.py"
+Start-Sleep 4
 $q.Refresh(); $qh = $q.MainWindowHandle
 [void][TW]::SetWindowPos($qh, [IntPtr]::Zero, -5000, 200, 0, 0, 0x15)
 Start-Sleep -m 800
@@ -233,9 +237,14 @@ $ordered = $true
 for ($i = 1; $i -lt $pgn.Count; $i++) { if ($pgn[$i] -ne $pgn[$i-1] + 1) { $ordered = $false; break } }
 Check "full-screen program: every line in order, none repeated or skipped" ($ordered -and $pgn.Count -gt 0) "$($pgn[0])..$($pgn[-1]) of $($pgn.Count)"
 Check "full-screen program: the copy reaches past where the screen started" (($pgn.Count -gt 0) -and ($pgn[0] -lt $qfirst)) "copy starts at $($pgn[0]); the screen started at $qfirst"
+# The pinned prompt box must stay out of the copy: the old harvest compared whole screens, and
+# a box that never scrolls meant every repaint read as "all new" and got banked again.
+$boxLines = @($pg -split "`r?`n" | Where-Object { $_ -match 'ask me anything|for shortcuts|^[╭╰]' })
+Check "full-screen program: the pinned prompt box is not in the copy" ($boxLines.Count -eq 0) "$($boxLines.Count) box lines in the copy"
+Remove-Item Env:\CHILD_SHAPE -ErrorAction SilentlyContinue
 Stop-Process -Id $q.Id -Force -ErrorAction SilentlyContinue
 Start-Sleep 1
-$p = StartWin "C:\Users\matt\dev\pctools\th_child.py"
+$p = StartWin "C:\Users\matt\dev\trinidad-head\pc-tools\th_child.py"
 Start-Sleep 3
 $p.Refresh(); $hw = $p.MainWindowHandle
 [void][TW]::SetWindowPos($hw, [IntPtr]::Zero, -5000, 200, 0, 0, 0x15)

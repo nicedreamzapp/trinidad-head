@@ -59,7 +59,6 @@ use windows::core::Interface;
 use windows::Win32::Graphics::Direct2D::Common::{D2D1_FIGURE_BEGIN_FILLED, D2D1_FIGURE_END_CLOSED};
 use windows::Win32::Graphics::Direct2D::{ID2D1Factory1, ID2D1Geometry, ID2D1LinearGradientBrush, ID2D1PathGeometry1};
 use crate::layout::{Button, Hit, Layout, GLASS};
-use crate::textutil::Harvest;
 use crate::theme::{self, GLOWS};
 
 const WM_TERM_OUTPUT: u32 = WM_APP + 1;
@@ -135,8 +134,6 @@ struct App {
     drag_pt: (f32, f32),
     /// Autoscroll ticks so far (the self-test reads it out of the screen dump).
     autoscroll_ticks: u64,
-    /// Set while a drag runs past an edge inside a program that owns the screen.
-    harvest: Option<Harvest>,
     /// While a highlight is being deleted out of the program's input box, what is typed waits
     /// here and follows the deletion (see `prompt_edit`). None the rest of the time.
     cut_queue: Arc<Mutex<Option<Vec<u8>>>>,
@@ -315,7 +312,6 @@ pub fn run() {
             autoscroll: false,
             drag_pt: (0.0, 0.0),
             autoscroll_ticks: 0,
-            harvest: None,
             cut_queue: Arc::new(Mutex::new(None)),
             cuts: Arc::new(std::sync::atomic::AtomicU32::new(0)),
             cut_note: String::new(),
@@ -534,15 +530,11 @@ impl App {
                 }
                 WM_MOUSEWHEEL => {
                     let delta = ((wparam.0 >> 16) as u16 as i16) as i32;
-                    if self.selecting && self.program_owns_screen() {
-                        // Scrolling by hand in the middle of a selection: the program
-                        // repaints, so bank what it uncovers instead of letting the selection
-                        // slide onto whatever text lands on those rows.
-                        self.harvest_step(delta > 0);
-                        self.render();
-                        return Some(LRESULT(0));
-                    }
-                    if self.mouse_mode() > 0 {
+                    // Scrolled back into the document, the wheel moves OUR window, even while a
+                    // full-screen program has the mouse — same as the Mac. The selection is
+                    // anchored to document lines, so it stays on the words it was put on.
+                    let scrolled_back = self.scroll_offset > 0;
+                    if self.mouse_mode() > 0 && !self.selecting && !scrolled_back {
                         // Wheel events go to the program as buttons 64 (up) / 65 (down).
                         let mut pt = POINT { x: (lparam.0 & 0xFFFF) as u16 as i16 as i32, y: ((lparam.0 >> 16) & 0xFFFF) as u16 as i16 as i32 };
                         let _ = ScreenToClient(self.hwnd, &mut pt);
@@ -553,7 +545,7 @@ impl App {
                         return Some(LRESULT(0));
                     }
                     let lines = (delta / WHEEL_DELTA as i32) * 3;
-                    let max = self.shared.lock().unwrap().term.scrollback_len() as i32;
+                    let max = self.shared.lock().unwrap().term.history_len() as i32;
                     self.scroll_offset = (self.scroll_offset as i32 + lines).clamp(0, max) as usize;
                     self.render();
                     Some(LRESULT(0))
@@ -647,7 +639,6 @@ impl App {
                         // selects text here. Hold the press until we know which it is.
                         self.pending_press = Some((self.screen_cell(x, y), self.cell_at(x, y)));
                         self.sel = None;
-                        self.harvest = None;
                         SetCapture(self.hwnd);
                         self.render();
                     } else if self.layout.in_body(x, y) {
@@ -656,7 +647,6 @@ impl App {
                         self.sel = Some((p, p));
                         self.selecting = true;
                         self.drag_pt = (x, y);
-                        self.harvest = None;
                         SetCapture(self.hwnd);
                         self.render();
                     }
@@ -682,7 +672,7 @@ impl App {
                         self.selecting = false;
                         let _ = ReleaseCapture();
                         // Nothing is copied until Copy is picked (right-click menu or Ctrl+C).
-                        if self.harvest.is_none() && matches!(self.sel, Some((a, b)) if a == b) {
+                        if matches!(self.sel, Some((a, b)) if a == b) {
                             self.sel = None;
                         }
                         self.render();
@@ -776,60 +766,6 @@ impl App {
     /// One tick of a held drag: move the view a few lines, then stretch the selection to the
     /// pointer. The end point is clamped to the visible grid, so scrolling is what lets the
     /// selection reach text that was never on screen.
-    /// Whether the program on screen owns what we would be scrolling to. Claude Code and any
-    /// other full-screen program keep their own history and ask for the mouse; the rows above
-    /// and below are theirs, not in our scrollback.
-    fn program_owns_screen(&self) -> bool {
-        let st = self.shared.lock().unwrap();
-        st.term.mouse_tracking != 0 && (st.term.in_alt_screen() || st.term.scrollback_len() == 0)
-    }
-
-    fn visible_rows(&self) -> Vec<String> {
-        let st = self.shared.lock().unwrap();
-        (0..st.term.rows()).map(|r| st.term.row_text(r)).collect()
-    }
-
-    /// The selected text as lines, for seeding a harvest with what is already on screen.
-    fn selection_lines(&self) -> Vec<String> {
-        let Some((a, b)) = self.sel else { return Vec::new() };
-        let st = self.shared.lock().unwrap();
-        st.term.text_between(a, b).lines().map(|l| l.to_string()).collect()
-    }
-
-    /// While harvesting, everything on screen is part of the selection: the anchor scrolled
-    /// away long ago, so highlighting a range from it would be a lie.
-    fn select_whole_screen(&mut self) {
-        let (base, rows, cols) = {
-            let st = self.shared.lock().unwrap();
-            (st.term.scrollback_len(), st.term.rows(), st.term.cols())
-        };
-        self.sel = Some(((base, 0), (base + rows.saturating_sub(1), cols.saturating_sub(1))));
-    }
-
-    /// One step of selecting through a full-screen program: bank whatever it uncovered since
-    /// last time, then ask it for one more notch. False once it has stopped moving.
-    fn harvest_step(&mut self, up: bool) -> bool {
-        let now = self.visible_rows();
-        if now.is_empty() {
-            return false;
-        }
-        let seed = if self.harvest.is_none() { self.selection_lines() } else { Vec::new() };
-        let keep_going = match self.harvest.as_mut() {
-            None => {
-                self.harvest = Some(Harvest::new(up, now, seed));
-                true
-            }
-            Some(h) => h.absorb(now),
-        };
-        self.select_whole_screen();
-        if keep_going {
-            // The program asked for the mouse, so a wheel report is what it expects.
-            let (x, y) = self.drag_pt;
-            self.report_mouse(if up { 64 } else { 65 }, x, y, true);
-        }
-        keep_going
-    }
-
     fn autoscroll_step(&mut self) {
         self.autoscroll_ticks += 1;
         let (x, y) = self.drag_pt;
@@ -838,15 +774,11 @@ impl App {
             self.stop_autoscroll();
             return;
         }
-        if self.program_owns_screen() {
-            // The rows we are reaching for belong to the program, not to our scrollback.
-            if !self.harvest_step(lines > 0) {
-                self.stop_autoscroll();
-            }
-            self.render();
-            return;
-        }
-        let max = self.shared.lock().unwrap().term.scrollback_len() as i64;
+        // One path only, the same as the Mac: move our own window through the document and
+        // stretch the selection to the pointer. The rows a full-screen program scrolled past
+        // are already in the document (core-vt's alt_history), so there is nothing to harvest
+        // off the screen and the program is never touched.
+        let max = self.shared.lock().unwrap().term.history_len() as i64;
         let before = self.scroll_offset;
         self.scroll_offset = (before as i64 + lines).clamp(0, max) as usize;
         let p = self.cell_at(x, y);
@@ -867,10 +799,10 @@ impl App {
         let t = self.layout.text;
         let st = self.shared.lock().unwrap();
         let term = &st.term;
-        let offset = self.scroll_offset.min(term.scrollback_len());
+        let offset = self.scroll_offset.min(term.history_len());
         let row = ((y - t.t) / self.cell_h).floor().clamp(0.0, (term.rows() - 1) as f32) as usize;
         let col = ((x - t.l) / self.cell_w).floor().clamp(0.0, (term.cols() - 1) as f32) as usize;
-        (term.scrollback_len() - offset + row, col)
+        (term.history_len() - offset + row, col)
     }
 
     /// The program's mouse mode, unless Shift is held (Shift always means "let me select").
@@ -912,10 +844,7 @@ impl App {
     }
 
     fn copy_selection(&mut self) {
-        let text = if let Some(h) = self.harvest.as_ref() {
-            // Gathered out of a full-screen program a screen at a time.
-            h.text()
-        } else {
+        let text = {
             let Some((a, b)) = self.sel else { return };
             self.shared.lock().unwrap().term.text_between(a, b)
         };
@@ -933,7 +862,7 @@ impl App {
         const PASTE: usize = 4;
         const SELECT_ALL: usize = 5;
         let link = self.link_at(x, y);
-        let has_sel = self.harvest.as_ref().is_some_and(|h| !h.lines.is_empty()) || matches!(self.sel, Some((a, b)) if a != b);
+        let has_sel = matches!(self.sel, Some((a, b)) if a != b);
         let has_clip = unsafe { IsClipboardFormatAvailable(CF_UNICODETEXT).is_ok() };
         let mut items: Vec<(usize, &str, bool)> = Vec::new();
         if link.is_some() {
@@ -982,11 +911,9 @@ impl App {
             COPY => {
                 self.copy_selection();
                 self.sel = None;
-                self.harvest = None;
             }
             PASTE => self.paste(),
             SELECT_ALL => {
-                self.harvest = None;
                 let st = self.shared.lock().unwrap();
                 let (total, cols) = (st.term.total_lines(), st.term.cols());
                 drop(st);
@@ -1073,7 +1000,6 @@ impl App {
 
     fn send(&mut self, bytes: &[u8]) {
         self.sel = None;
-        self.harvest = None;
         self.meter.key(Instant::now());
         self.scroll_offset = 0;
         let mut queue = self.cut_queue.lock().unwrap();
@@ -1094,14 +1020,14 @@ impl App {
             self.cut_note = "no highlight".into();
             return false;
         };
-        if a == b || self.harvest.is_some() || self.scroll_offset != 0 || self.cut_queue.lock().unwrap().is_some() {
-            self.cut_note = format!("skipped: {a:?}..{b:?}, harvest {}, scrolled {}", self.harvest.is_some(), self.scroll_offset);
+        if a == b || self.scroll_offset != 0 || self.cut_queue.lock().unwrap().is_some() {
+            self.cut_note = format!("skipped: {a:?}..{b:?}, scrolled {}", self.scroll_offset);
             return false;
         }
         let (cut, note) = {
             let st = self.shared.lock().unwrap();
-            // Selection lines count from the top of our scrollback (see `cell_at`).
-            let hist = st.term.scrollback_len();
+            // Selection lines count from the top of the document (see `cell_at`).
+            let hist = st.term.history_len();
             let note = format!("highlight {a:?}..{b:?}, scrollback {hist}, caret {:?}, mouse {}", st.term.cursor(), st.term.mouse_tracking);
             if st.term.mouse_tracking == 0 || a.0 < hist || b.0 < hist {
                 (None, note)
@@ -1182,7 +1108,7 @@ impl App {
         let rows = self.shared.lock().unwrap().term.rows();
 
         if shift && (vk == VK_PRIOR || vk == VK_NEXT) {
-            let max = self.shared.lock().unwrap().term.scrollback_len();
+            let max = self.shared.lock().unwrap().term.history_len();
             self.scroll_offset = if vk == VK_PRIOR {
                 (self.scroll_offset + rows.saturating_sub(1)).min(max)
             } else {
@@ -1195,7 +1121,6 @@ impl App {
         if ctrl && vk.0 == b'C' as u16 && (shift || self.sel.is_some()) {
             self.copy_selection();
             self.sel = None;
-            self.harvest = None;
             self.skip_char = true;
             self.render();
             return true;
@@ -1545,7 +1470,7 @@ impl App {
         let shared = self.shared.clone();
         let st = shared.lock().unwrap();
         let term = &st.term;
-        let offset = self.scroll_offset.min(term.scrollback_len());
+        let offset = self.scroll_offset.min(term.history_len());
         let default_fg = rgb(theme::TEXT);
 
         unsafe {
@@ -1928,7 +1853,7 @@ impl App {
                     out.push_str(&format!(
                         "scroll {} of {} autoscroll {} ticks, drag {:.0},{:.0}, text {:.0},{:.0},{:.0},{:.0}\n",
                         self.scroll_offset,
-                        term.scrollback_len(),
+                        term.history_len(),
                         self.autoscroll_ticks,
                         self.drag_pt.0,
                         self.drag_pt.1,
