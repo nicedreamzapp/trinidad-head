@@ -134,6 +134,10 @@ struct App {
     drag_pt: (f32, f32),
     /// Autoscroll ticks so far (the self-test reads it out of the screen dump).
     autoscroll_ticks: u64,
+    /// Rows the last paint actually filled with the highlight colour. Counted by the painter
+    /// itself, not recomputed, so the dump reports what Matt can see. A selection that exists
+    /// but paints nothing is the bug this catches.
+    hl_rows: std::cell::Cell<usize>,
     /// While a highlight is being deleted out of the program's input box, what is typed waits
     /// here and follows the deletion (see `prompt_edit`). None the rest of the time.
     cut_queue: Arc<Mutex<Option<Vec<u8>>>>,
@@ -312,6 +316,7 @@ pub fn run() {
             autoscroll: false,
             drag_pt: (0.0, 0.0),
             autoscroll_ticks: 0,
+            hl_rows: std::cell::Cell::new(0),
             cut_queue: Arc::new(Mutex::new(None)),
             cuts: Arc::new(std::sync::atomic::AtomicU32::new(0)),
             cut_note: String::new(),
@@ -1700,11 +1705,15 @@ impl App {
                 brush.SetColor(&D2D1_COLOR_F { a: 0.35, ..rgb((ur as u32) << 16 | (ug as u32) << 8 | ub as u32) });
                 dc.DrawRoundedRectangle(&pill, &brush, 1.0, None);
             }
+            self.hl_rows.set(0);
             for row in 0..term.rows() {
                 let line = term.line(row, offset);
                 let y = top + row as f32 * ch;
                 if let Some((sa, sb)) = sel {
-                    let abs = term.scrollback_len() - offset + row;
+                    // Document line, counted the same way `cell_at` counts it. This has to be
+                    // history_len(): inside Claude Code scrollback_len() is 0 while offset is
+                    // not, so the subtraction wrapped and the highlight was never painted.
+                    let abs = term.history_len() - offset + row;
                     if abs >= sa.0 && abs <= sb.0 {
                         let c0 = if abs == sa.0 { sa.1 } else { 0 };
                         let c1 = if abs == sb.0 { sb.1 + 1 } else { term.cols() };
@@ -1713,6 +1722,7 @@ impl App {
                             &D2D_RECT_F { left: left + c0 as f32 * cw, top: y, right: left + c1 as f32 * cw, bottom: y + ch },
                             &brush,
                         );
+                        self.hl_rows.set(self.hl_rows.get() + 1);
                     }
                 }
                 let mut col = 0;
@@ -1795,8 +1805,8 @@ impl App {
 
             // Scrolled back: a thin bar on the right shows where we are.
             if offset > 0 {
-                let total = (term.scrollback_len() + term.rows()) as f32;
-                let t = l.text.t + (term.scrollback_len() - offset) as f32 / total * l.text.h();
+                let total = (term.history_len() + term.rows()) as f32;
+                let t = l.text.t + (term.history_len() - offset) as f32 / total * l.text.h();
                 let len = (term.rows() as f32 / total * l.text.h()).max(10.0 * s);
                 brush.SetColor(&D2D1_COLOR_F { a: 0.5, ..rgb(glow.accent()) });
                 dc.FillRoundedRectangle(
@@ -1863,6 +1873,7 @@ impl App {
                         self.layout.text.r,
                         self.layout.text.b,
                     ));
+                    out.push_str(&format!("highlight rows {}\n", self.hl_rows.get()));
                     out.push_str(&format!("prompt cuts {} ({})\n", self.cuts.load(Ordering::SeqCst), self.cut_note));
                     out.push_str(&format!("cell {:.3}x{:.3}\n", self.cell_w, self.cell_h));
                     if let Some((p50, p95, n)) = self.meter.stats() {

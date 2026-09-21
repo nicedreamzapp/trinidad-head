@@ -224,6 +224,14 @@ $qy = [int]($tt + ($qlast + 0.5) * $cellH)
 [void][TW]::PostMessage($qh, $WM_LD, [IntPtr]1, [TW]::L($tl + 2, $qy)); Start-Sleep -m 150
 [void][TW]::PostMessage($qh, $WM_MV, [IntPtr]1, [TW]::L($tl + 2, $qy - 10)); Start-Sleep -m 150
 [void][TW]::PostMessage($qh, $WM_MV, [IntPtr]1, [TW]::L($tl + 2, $tt - 20)); Start-Sleep -m 3000
+# Mid-drag, before the button comes up: the rows being dragged over have to be PAINTED, not
+# merely selected. The painter counts what it fills, so this reads what Matt can see. The
+# highlight line underflowed to zero rows when the painter still counted with scrollback_len.
+[void][TW]::PostMessage($qh, 0x000F, [IntPtr]0, [IntPtr]0); Start-Sleep -m 500
+$midDump = Get-Content C:\Users\matt\dev\th_test_dump.txt -ErrorAction SilentlyContinue
+$hlRows = 0
+foreach ($ln in $midDump) { if ($ln -match '^highlight rows (\d+)') { $hlRows = [int]$Matches[1]; break } }
+Check "full-screen program: the rows being dragged over are highlighted" ($hlRows -gt 0) "$hlRows rows painted"
 [void][TW]::PostMessage($qh, $WM_LU, [IntPtr]0, [TW]::L($tl + 2, $tt - 20)); Start-Sleep -m 500
 [void][TW]::PostMessage($qh, $WM_RU, [IntPtr]0, [TW]::L($tl + 2, $qy)); Start-Sleep -m 700
 [void][TW]::PostMessage($qh, $WM_KD, [IntPtr]0x28, [IntPtr]0); Start-Sleep -m 200
