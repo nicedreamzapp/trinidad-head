@@ -18,7 +18,10 @@ function Check($name, $got, $want) {
 }
 # A window that ignores the close message, standing in for one the run left open.
 function FakeWindow { Start-Process -FilePath "/bin/sleep" -ArgumentList "600" -PassThru }
-if (-not (Test-Path "/bin/sleep")) { function FakeWindow { Start-Process -FilePath "cmd.exe" -ArgumentList "/c pause" -PassThru } }
+if (-not (Test-Path "/bin/sleep")) {
+  # On the PC: a hidden console that sits there, so nothing flashes on Matt's screen.
+  function FakeWindow { Start-Process -FilePath "cmd.exe" -ArgumentList "/c pause" -WindowStyle Hidden -PassThru }
+}
 
 # 1. The run dies partway with a window still up: finally still ends it.
 $log = New-Object System.Collections.Generic.List[string]
