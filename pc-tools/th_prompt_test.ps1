@@ -74,8 +74,18 @@ function Drag($g, $r1, $c1, $r2, $c2) {
   [void][TP]::PostMessage($hw, $WM_MV, [IntPtr]1, [TP]::L($b[0], $b[1])); Start-Sleep -m 120
   [void][TP]::PostMessage($hw, $WM_LU, [IntPtr]0, [TP]::L($b[0], $b[1])); Start-Sleep -m 300
 }
+# The dump is only rewritten on a repaint, so wait until its prompt row shows what the
+# program's buffer really holds before aiming at a word in it.
+function FreshGeo {
+  for ($k = 0; $k -lt 15; $k++) {
+    $g = Geo; $want = Buf
+    $row = $g.d | Where-Object { $_.Length -gt 1 -and $_[0] -eq [char]0x276F } | Select-Object -First 1
+    if ($row -and $want.StartsWith($row.Substring(2).TrimEnd())) { return $g }
+  }
+  return $g
+}
 function HighlightWord($word) {
-  $g = Geo; $f = Find $g $word
+  $g = FreshGeo; $f = Find $g $word
   if ($f) { Drag $g $f[0] $f[1] $f[0] $f[2] } else { $results.Add("NOTE $word is not on screen: rows $($g.rows), lines $($g.d.Count): " + (($g.d | Where-Object { $_ -ne "" }) -join " | ")) }
 }
 function Char($c) { [void][TP]::PostMessage($hw, $WM_CH, [IntPtr][int][char]$c, [IntPtr]0); Start-Sleep -m 30 }
@@ -98,7 +108,7 @@ Check "Backspace with no highlight deletes one character" (WaitBuf "alpha bravo 
 
 HighlightWord "bravo"; Backspace
 Check "highlight a word, Backspace deletes the word" (WaitBuf "alpha  charlie delta ech") (Buf)
-Start-Sleep -m 400
+for ($k = 0; $k -lt 10 -and (Cuts) -ne 1; $k++) { [void][TP]::PostMessage($hw, $WM_PAINT, [IntPtr]0, [IntPtr]0); Start-Sleep -m 300 }
 Check "the delete ran through the prompt path" ((Cuts) -eq 1) ((Get-Content $dumpFile -Encoding UTF8 | Select-String "prompt cuts").Line)
 
 HighlightWord "charlie"; Char "X"
@@ -112,12 +122,12 @@ HighlightWord "abc"
 [void][TP]::PostMessage($hw, $WM_KU, [IntPtr]0x2E, [IntPtr]0)
 Check "highlight, Delete deletes it" (WaitBuf "alpha  X  ech") (Buf)
 
-$g = Geo; $f = Find $g "TRANSCRIPT-LINE-1"
+$g = FreshGeo; $f = Find $g "TRANSCRIPT-LINE-1"
 if ($f) { Drag $g $f[0] $f[1] $f[0] $f[2] }
 Backspace
 Check "a highlight outside the prompt leaves the prompt alone (one Backspace)" (WaitBuf "alpha  X  ec") (Buf)
 
-$g = Geo; $f = Find $g "alpha"
+$g = FreshGeo; $f = Find $g "alpha"
 if ($f) { Drag $g $f[0] 0 $f[0] ($g.cols - 1) }
 Backspace
 Check "highlighting the whole line, mark included, and Backspace empties the prompt" (WaitBuf "") (Buf)
@@ -126,7 +136,7 @@ Check "highlighting the whole line, mark included, and Backspace empties the pro
 $long = (1..40 | ForEach-Object { "w{0:D2}" -f $_ }) -join " "
 TypeText $long
 Check "a long text wraps in the prompt" (WaitBuf $long) (Buf)
-$g = Geo; $f1 = Find $g "w01"
+$g = FreshGeo; $f1 = Find $g "w01"
 $row2 = $g.d[$f1[0] + 1].Trim()
 $n = [int]($row2.Split(" ")[0].Substring(1))
 $wa = "w{0:D2}" -f ($n - 3); $wb = "w{0:D2}" -f ($n + 2)
