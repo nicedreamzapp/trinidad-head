@@ -1,3 +1,10 @@
+> **2026-09-20, Matt went through the roadmap and dropped most of it.** Do not build or advertise
+> these: sessions that outlive the window (he wants programs to END when a window closes), the
+> Linux/WSL bridge, the agent layer (command records, agent tabs, approvals, audit log: Claude Code
+> already does this), screen-reader support (Speak Anywhere and the Mac's own speech cover it) and
+> plugins. The one next step he kept is a download people can install. The rest of this file is
+> the original 9/16 plan, kept for history.
+
 # Trinidad Head — plan (2026-09-16)
 
 Written from scratch in Rust, with no Ghostty engine inside, and built as a **platform** other

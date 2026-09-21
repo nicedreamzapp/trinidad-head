@@ -127,16 +127,6 @@ target\release\trinidad-head.exe
 
 ---
 
-## 🧭 Where it's going
-
-- 🔄 **Sessions that survive.** Close the window and your work keeps running; reopen it anywhere.
-- 🐧 **Windows and Linux side by side**, sharing files and copy/paste.
-- 🤖 **AI helpers with guardrails.** Each gets its own tab, and risky commands wait for your OK.
-- ♿ **Screen-reader support** from the start.
-
-The full plan is in [docs/PLAN.md](docs/PLAN.md), and the research behind it is in
-[docs/RESEARCH.md](docs/RESEARCH.md).
-
 ## 📜 License
 
 Trinidad Head is dual-licensed under either the [MIT License](LICENSE-MIT) or the
