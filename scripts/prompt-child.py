@@ -8,7 +8,7 @@ Delete edit at the caret, bracketed paste inserts, Enter moves the text up into 
 transcript. After every change it writes the exact text to PROMPT_CHILD_OUT, so the test
 checks the program's own buffer rather than what happens to be on screen.
 """
-import os, re, sys, tty
+import os, re, sys
 
 OUT = os.environ.get("PROMPT_CHILD_OUT", "/tmp/prompt-child.txt")
 TEXT_COL = 2
@@ -88,7 +88,16 @@ def click(row, col):
 
 
 fd = sys.stdin.fileno()
-tty.setraw(fd)
+if os.name == "nt":
+    # The PC's self-test runs this too: raw VT bytes in, VT and UTF-8 out.
+    import ctypes
+    k32 = ctypes.windll.kernel32
+    k32.SetConsoleMode(k32.GetStdHandle(-10), 0x200)
+    k32.SetConsoleMode(k32.GetStdHandle(-11), 0x0001 | 0x0004)
+    sys.stdout.reconfigure(encoding="utf-8")
+else:
+    import tty
+    tty.setraw(fd)
 sys.stdout.write("\x1b[?1049h\x1b[?1002h\x1b[?1006h\x1b[?2004h")
 save()
 state = paint()

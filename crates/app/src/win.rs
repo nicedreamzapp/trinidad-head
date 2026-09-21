@@ -137,6 +137,11 @@ struct App {
     autoscroll_ticks: u64,
     /// Set while a drag runs past an edge inside a program that owns the screen.
     harvest: Option<Harvest>,
+    /// While a highlight is being deleted out of the program's input box, what is typed waits
+    /// here and follows the deletion (see `prompt_edit`). None the rest of the time.
+    cut_queue: Arc<Mutex<Option<Vec<u8>>>>,
+    /// Highlights deleted out of the input box so far (in the self-test's screen dump).
+    cuts: Arc<std::sync::atomic::AtomicU32>,
     meter: crate::latency::Meter,
     last_title: Instant,
     started: Instant,
@@ -308,6 +313,8 @@ pub fn run() {
             drag_pt: (0.0, 0.0),
             autoscroll_ticks: 0,
             harvest: None,
+            cut_queue: Arc::new(Mutex::new(None)),
+            cuts: Arc::new(std::sync::atomic::AtomicU32::new(0)),
             meter: crate::latency::Meter::new(log),
             last_title: Instant::now(),
             started,
@@ -1065,7 +1072,60 @@ impl App {
         self.harvest = None;
         self.meter.key(Instant::now());
         self.scroll_offset = 0;
+        let mut queue = self.cut_queue.lock().unwrap();
+        if let Some(q) = queue.as_mut() {
+            q.extend_from_slice(bytes);
+            return;
+        }
         let _ = self.pty.lock().unwrap().write(bytes);
+    }
+
+    /// Delete the highlight, the way a text box does, when it sits inside the program's input
+    /// box (Claude Code's prompt), then send `after` (typed or pasted text). Returns false,
+    /// doing nothing, for a highlight anywhere else. If the program turns out not to move its
+    /// caret on a click, nothing is deleted and `fallback` is sent instead, exactly what the
+    /// key would have sent with nothing highlighted. Same as the Mac build.
+    fn try_cut(&mut self, after: &[u8], fallback: &[u8]) -> bool {
+        let Some((a, b)) = self.sel else { return false };
+        if a == b || self.harvest.is_some() || self.scroll_offset != 0 || self.cut_queue.lock().unwrap().is_some() {
+            return false;
+        }
+        let cut = {
+            let st = self.shared.lock().unwrap();
+            if st.term.mouse_tracking == 0 {
+                return false;
+            }
+            // Selection lines count from the top of our scrollback (see `cell_at`).
+            let hist = st.term.scrollback_len();
+            if a.0 < hist || b.0 < hist {
+                return false;
+            }
+            let rows: Vec<Vec<Cell>> = (0..st.term.rows()).map(|r| st.term.line(r, 0).to_vec()).collect();
+            crate::prompt_edit::plan(&rows, st.term.cursor(), (a.0 - hist, a.1), (b.0 - hist, b.1))
+        };
+        let Some(cut) = cut else { return false };
+        self.sel = None;
+        self.meter.key(Instant::now());
+        *self.cut_queue.lock().unwrap() = Some(Vec::new());
+        let (shared, pty, queue, cuts) = (self.shared.clone(), self.pty.clone(), self.cut_queue.clone(), self.cuts.clone());
+        let (after, fallback) = (after.to_vec(), fallback.to_vec());
+        std::thread::spawn(move || {
+            let screen = CutScreen { shared, pty: pty.clone() };
+            let done = crate::prompt_edit::run(&screen, cut);
+            if done {
+                cuts.fetch_add(1, Ordering::SeqCst);
+            }
+            // Hand the keyboard back under the queue's lock, so nothing typed in between can
+            // overtake what was waiting.
+            let mut q = queue.lock().unwrap();
+            let mut p = pty.lock().unwrap();
+            let _ = p.write(if done { &after } else { &fallback });
+            if let Some(waiting) = q.take() {
+                let _ = p.write(&waiting);
+            }
+        });
+        self.render();
+        true
     }
 
     fn on_char(&mut self, unit: u16, alt: bool) {
@@ -1079,6 +1139,19 @@ impl App {
             char::from_u32(unit as u32)
         };
         let Some(ch) = ch else { return };
+        // With a highlight in the prompt, Backspace deletes it and typing replaces it.
+        if !alt && self.sel.is_some() {
+            if ch == '\u{8}' && self.try_cut(&[], &[0x7f]) {
+                return;
+            }
+            if !ch.is_control() {
+                let mut b = [0u8; 4];
+                let typed = ch.encode_utf8(&mut b).as_bytes().to_vec();
+                if self.try_cut(&typed, &typed) {
+                    return;
+                }
+            }
+        }
         let mut out = Vec::with_capacity(8);
         if alt {
             out.push(0x1b);
@@ -1118,6 +1191,21 @@ impl App {
             self.skip_char = true;
             self.render();
             return true;
+        }
+        // Ctrl+X with a highlight in the prompt: copy it, then take it out. Anywhere else Ctrl+X
+        // goes to the program as before.
+        if ctrl && !shift && vk.0 == b'X' as u16 && self.sel.is_some() {
+            let text = {
+                let (a, b) = self.sel.unwrap();
+                self.shared.lock().unwrap().term.text_between(a, b)
+            };
+            if self.try_cut(&[], &[]) {
+                if !text.is_empty() {
+                    unsafe { set_clipboard_text(self.hwnd, &text) };
+                }
+                self.skip_char = true;
+                return true;
+            }
         }
         if ctrl && shift && vk.0 == b'V' as u16 {
             self.skip_char = true;
@@ -1162,7 +1250,14 @@ impl App {
             VK_HOME => cursor('H'),
             VK_END => cursor('F'),
             VK_INSERT => tilde(2),
-            VK_DELETE => tilde(3),
+            VK_DELETE => {
+                // Delete with a highlight in the prompt deletes the highlight.
+                let key = tilde(3);
+                if self.try_cut(&[], &key) {
+                    return true;
+                }
+                key
+            }
             VK_PRIOR => tilde(5),
             VK_NEXT => tilde(6),
             VK_F1 => ss3('P'),
@@ -1200,7 +1295,10 @@ impl App {
         if bracketed {
             out.extend_from_slice(b"\x1b[201~");
         }
-        self.send(&out);
+        // Pasting over a highlight in the prompt replaces it.
+        if !self.try_cut(&out, &out) {
+            self.send(&out);
+        }
     }
 
     fn dpi_scale(&self) -> f32 {
@@ -1831,6 +1929,7 @@ impl App {
                         self.layout.text.r,
                         self.layout.text.b,
                     ));
+                    out.push_str(&format!("prompt cuts {}\n", self.cuts.load(Ordering::SeqCst)));
                     if let Some((p50, p95, n)) = self.meter.stats() {
                         out.push_str(&format!("typing delay median {p50:.1} ms, p95 {p95:.1} ms over {n} keys\n"));
                     }
@@ -1891,6 +1990,35 @@ impl App {
                 DWRITE_MEASURING_MODE_NATURAL,
             );
         }
+    }
+}
+
+/// The window as `prompt_edit` sees it, from the thread that deletes a highlight.
+struct CutScreen {
+    shared: Arc<Mutex<Shared>>,
+    pty: Arc<Mutex<Pty>>,
+}
+
+impl crate::prompt_edit::Screen for CutScreen {
+    fn snapshot(&self) -> ((usize, usize), Vec<Vec<Cell>>) {
+        let s = self.shared.lock().unwrap();
+        (s.term.cursor(), (0..s.term.rows()).map(|r| s.term.line(r, 0).to_vec()).collect())
+    }
+    fn write(&self, bytes: &[u8]) {
+        let _ = self.pty.lock().unwrap().write(bytes);
+    }
+    fn click(&self, (row, col): (usize, usize)) {
+        let sgr = self.shared.lock().unwrap().term.mouse_sgr;
+        let mut bytes = Vec::new();
+        for pressed in [true, false] {
+            if sgr {
+                bytes.extend(core_vt::sgr_mouse(0, col, row, pressed));
+            } else {
+                let b = if pressed { 0 } else { 3 };
+                bytes.extend([0x1b, b'[', b'M', 32 + b, (33 + col.min(222)) as u8, (33 + row.min(222)) as u8]);
+            }
+        }
+        self.write(&bytes);
     }
 }
 
