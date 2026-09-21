@@ -142,6 +142,9 @@ struct App {
     cut_queue: Arc<Mutex<Option<Vec<u8>>>>,
     /// Highlights deleted out of the input box so far (in the self-test's screen dump).
     cuts: Arc<std::sync::atomic::AtomicU32>,
+    /// Why the last Backspace/typing over a highlight did or didn't go through the prompt path
+    /// (in the screen dump, for the PC test).
+    cut_note: String,
     meter: crate::latency::Meter,
     last_title: Instant,
     started: Instant,
@@ -315,6 +318,7 @@ pub fn run() {
             harvest: None,
             cut_queue: Arc::new(Mutex::new(None)),
             cuts: Arc::new(std::sync::atomic::AtomicU32::new(0)),
+            cut_note: String::new(),
             meter: crate::latency::Meter::new(log),
             last_title: Instant::now(),
             started,
@@ -1086,23 +1090,27 @@ impl App {
     /// caret on a click, nothing is deleted and `fallback` is sent instead, exactly what the
     /// key would have sent with nothing highlighted. Same as the Mac build.
     fn try_cut(&mut self, after: &[u8], fallback: &[u8]) -> bool {
-        let Some((a, b)) = self.sel else { return false };
+        let Some((a, b)) = self.sel else {
+            self.cut_note = "no highlight".into();
+            return false;
+        };
         if a == b || self.harvest.is_some() || self.scroll_offset != 0 || self.cut_queue.lock().unwrap().is_some() {
+            self.cut_note = format!("skipped: {a:?}..{b:?}, harvest {}, scrolled {}", self.harvest.is_some(), self.scroll_offset);
             return false;
         }
-        let cut = {
+        let (cut, note) = {
             let st = self.shared.lock().unwrap();
-            if st.term.mouse_tracking == 0 {
-                return false;
-            }
             // Selection lines count from the top of our scrollback (see `cell_at`).
             let hist = st.term.scrollback_len();
-            if a.0 < hist || b.0 < hist {
-                return false;
+            let note = format!("highlight {a:?}..{b:?}, scrollback {hist}, caret {:?}, mouse {}", st.term.cursor(), st.term.mouse_tracking);
+            if st.term.mouse_tracking == 0 || a.0 < hist || b.0 < hist {
+                (None, note)
+            } else {
+                let rows: Vec<Vec<Cell>> = (0..st.term.rows()).map(|r| st.term.line(r, 0).to_vec()).collect();
+                (crate::prompt_edit::plan(&rows, st.term.cursor(), (a.0 - hist, a.1), (b.0 - hist, b.1)), note)
             }
-            let rows: Vec<Vec<Cell>> = (0..st.term.rows()).map(|r| st.term.line(r, 0).to_vec()).collect();
-            crate::prompt_edit::plan(&rows, st.term.cursor(), (a.0 - hist, a.1), (b.0 - hist, b.1))
         };
+        self.cut_note = format!("{note}: {}", if cut.is_some() { "cutting" } else { "not in the prompt" });
         let Some(cut) = cut else { return false };
         self.sel = None;
         self.meter.key(Instant::now());
@@ -1929,7 +1937,7 @@ impl App {
                         self.layout.text.r,
                         self.layout.text.b,
                     ));
-                    out.push_str(&format!("prompt cuts {}\n", self.cuts.load(Ordering::SeqCst)));
+                    out.push_str(&format!("prompt cuts {} ({})\n", self.cuts.load(Ordering::SeqCst), self.cut_note));
                     if let Some((p50, p95, n)) = self.meter.stats() {
                         out.push_str(&format!("typing delay median {p50:.1} ms, p95 {p95:.1} ms over {n} keys\n"));
                     }

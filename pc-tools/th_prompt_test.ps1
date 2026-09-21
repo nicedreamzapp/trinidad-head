@@ -97,7 +97,7 @@ Check "Backspace with no highlight deletes one character" (WaitBuf "alpha bravo 
 HighlightWord "bravo"; Backspace
 Check "highlight a word, Backspace deletes the word" (WaitBuf "alpha  charlie delta ech") (Buf)
 Start-Sleep -m 400
-Check "the delete ran through the prompt path" ((Cuts) -eq 1) "cuts $(Cuts)"
+Check "the delete ran through the prompt path" ((Cuts) -eq 1) ((Get-Content $dumpFile -Encoding UTF8 | Select-String "prompt cuts").Line)
 
 HighlightWord "charlie"; Char "X"
 Check "typing over a highlight replaces it" (WaitBuf "alpha  X delta ech") (Buf)
