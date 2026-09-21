@@ -76,8 +76,12 @@ the same conversation carries on with whichever you pick. Nothing is lost.
 - 🔠 **Easy on the eyes.** Larger, clear text by default.
 - 🧹 **A calm view for AI work.** It works with Claude Code's focus view, so you see your question,
   a short summary and the answer instead of a flood of technical lines.
-- 🖱️ **Copy and paste just work.** Drag to select and it's copied. Right-click pastes. Hold Shift
-  to select even inside full-screen apps.
+- 🖱️ **Copy and paste just work.** Drag to select, then Cmd+C (Ctrl+C on Windows) or right-click
+  for Copy, Paste and Select All. Selecting works even inside full-screen apps like Claude Code.
+- ⌫ **Edit what you typed like a text box.** Highlight words in Claude Code's prompt and press
+  Backspace to delete them, or just type or paste over them. No other terminal can do this, because
+  the prompt belongs to Claude, not the terminal. Trinidad Head moves Claude's cursor for you and
+  deletes exactly what you highlighted, even across wrapped lines.
 - 📜 **Grab a paragraph bigger than the window.** Keep dragging past the top or bottom edge and
   the text keeps scrolling by itself, so you can take the whole thing without resizing anything.
 - 🎙️ **Dictation friendly.** Voice typing and other input methods go straight in.
