@@ -125,7 +125,9 @@ Check "highlight, Delete deletes it" (WaitBuf "alpha  X  ech") (Buf)
 $g = FreshGeo; $f = Find $g "TRANSCRIPT-LINE-1"
 if ($f) { Drag $g $f[0] $f[1] $f[0] $f[2] }
 Backspace
-Check "a highlight outside the prompt leaves the prompt alone (one Backspace)" (WaitBuf "alpha  X  ec") (Buf)
+# The caret sits where the Delete above left it (between the two spaces), so one plain
+# Backspace takes one of those spaces.
+Check "a highlight outside the prompt leaves the prompt alone (one Backspace)" (WaitBuf "alpha  X ech") (Buf)
 
 $g = FreshGeo; $f = Find $g "alpha"
 if ($f) { Drag $g $f[0] 0 $f[0] ($g.cols - 1) }
