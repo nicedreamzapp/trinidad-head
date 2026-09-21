@@ -33,7 +33,37 @@ $WM_CANCELMODE = 0x1F
 $settings = "$env:LOCALAPPDATA\TrinidadHead\settings.txt"
 $glowBefore = if (Test-Path $settings) { Get-Content $settings -Raw } else { "" }
 $regDir = "$env:LOCALAPPDATA\TrinidadHead\windows"
-$p = Start-Process -FilePath $exe -ArgumentList "`"$py`" C:\Users\matt\dev\pctools\th_child.py" -PassThru
+
+# Every test window is parked off-screen at x=-5000, so a run that dies partway leaves an
+# invisible Trinidad Head running on the PC and Matt's clipboard full of test text. Track what
+# this run starts and put the tidy-up in finally, which runs however the script ends: the runs
+# that strand a window are exactly the ones that never reach the bottom of the file.
+$spawned = New-Object System.Collections.Generic.List[object]
+function StartWin($child) {
+  $proc = Start-Process -FilePath $exe -ArgumentList "`"$py`" $child" -PassThru
+  $spawned.Add($proc)
+  return $proc
+}
+$WM_CLOSE = 0x0010
+
+# Ends every window this run started that is still up. Close, do not kill: the window hangs up
+# its shell and drops its taskbar button on its own, and a killed one leaves both behind.
+function CloseSpawned($windows, $log) {
+  $stranded = 0
+  foreach ($proc in $windows) {
+    try { $proc.Refresh() } catch { }
+    if (-not $proc.HasExited) {
+      $stranded++
+      try { [void][TW]::PostMessage($proc.MainWindowHandle, 0x0010, [IntPtr]0, [IntPtr]0) } catch { }
+      if (-not $proc.WaitForExit(8000)) { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue }
+    }
+  }
+  if ($stranded -gt 0) { $log.Add("NOTE closed $stranded test window(s) this run left open") }
+  return $stranded
+}
+# TEST-CUT (pc-tools/th_cleanup_test.ps1 reads everything above this line)
+try {
+$p = StartWin "C:\Users\matt\dev\pctools\th_child.py"
 Start-Sleep 3
 $p.Refresh(); $hw = $p.MainWindowHandle
 # Park the test window off to the side so Matt's real mouse can't land in it mid-test.
@@ -169,7 +199,7 @@ Start-Sleep -m 500
 # so none of that text is in our scrollback and grid coordinates cannot express the selection.
 Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
 Start-Sleep 1
-$q = Start-Process -FilePath $exe -ArgumentList "`"$py`" C:\Users\matt\dev\pctools\th_fullscreen_child.py" -PassThru
+$q = StartWin "C:\Users\matt\dev\pctools\th_fullscreen_child.py"
 Start-Sleep 3
 $q.Refresh(); $qh = $q.MainWindowHandle
 [void][TW]::SetWindowPos($qh, [IntPtr]::Zero, -5000, 200, 0, 0, 0x15)
@@ -205,7 +235,7 @@ Check "full-screen program: every line in order, none repeated or skipped" ($ord
 Check "full-screen program: the copy reaches past where the screen started" (($pgn.Count -gt 0) -and ($pgn[0] -lt $qfirst)) "copy starts at $($pgn[0]); the screen started at $qfirst"
 Stop-Process -Id $q.Id -Force -ErrorAction SilentlyContinue
 Start-Sleep 1
-$p = Start-Process -FilePath $exe -ArgumentList "`"$py`" C:\Users\matt\dev\pctools\th_child.py" -PassThru
+$p = StartWin "C:\Users\matt\dev\pctools\th_child.py"
 Start-Sleep 3
 $p.Refresh(); $hw = $p.MainWindowHandle
 [void][TW]::SetWindowPos($hw, [IntPtr]::Zero, -5000, 200, 0, 0, 0x15)
@@ -246,5 +276,8 @@ Check "default glow setting untouched" ($glowBack -eq $glowBefore) ""
 Click ([int](($M + 58 + 16) * $s)); Start-Sleep 1
 Check "red closes the window" ($p.HasExited) ""
 if (-not $p.HasExited) { Stop-Process -Id $p.Id -Force }
-[System.Windows.Forms.Clipboard]::SetText($(if ($saved) { $saved } else { " " }))
+} finally {
+  [System.Windows.Forms.Clipboard]::SetText($(if ($saved) { $saved } else { " " }))
+  [void](CloseSpawned $spawned $results)
+}
 $results
