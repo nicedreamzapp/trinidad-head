@@ -52,16 +52,22 @@ def paint():
     cols, lines = size()
     rows = layout(cols)
     box_top = max(1, lines - 3 - len(rows))  # rule, rows, rule, status
-    out = ["\x1b[H\x1b[2J"]
+    # Every row is written out whole, top to bottom. No clear-screen: Windows' console host
+    # turns a full clear into scrolling, which left the PC's window blank.
+    screen = [""] * lines
     body = transcript[-(box_top - 1):] if box_top > 1 else []
     for i, l in enumerate(body):
-        out.append(f"\x1b[{i + 1};1H{l[:cols]}")
-    out.append(f"\x1b[{box_top};1H" + "─" * cols)
+        screen[i] = l[:cols]
+    screen[box_top - 1] = "─" * cols
     for r, (_, chars) in enumerate(rows):
         lead = "❯ " if r == 0 else "  "
-        out.append(f"\x1b[{box_top + 1 + r};1H{lead}{''.join(chars)}")
-    out.append(f"\x1b[{box_top + 1 + len(rows)};1H" + "─" * cols)
-    out.append(f"\x1b[{box_top + 2 + len(rows)};1H  status {edits} edits")
+        screen[box_top + r] = lead + "".join(chars)
+    screen[box_top + len(rows)] = "─" * cols
+    if box_top + len(rows) + 1 < lines:
+        screen[box_top + len(rows) + 1] = f"  status {edits} edits"
+    out = ["\x1b[?25l"]
+    for i, l in enumerate(screen):
+        out.append(f"\x1b[{i + 1};1H\x1b[2K{l}")
     cr, cc = caret_cell(rows)
     out.append(f"\x1b[{box_top + 1 + cr};{cc + 1}H\x1b[?25h")
     sys.stdout.write("".join(out))
