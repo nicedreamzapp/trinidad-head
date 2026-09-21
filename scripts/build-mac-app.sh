@@ -3,11 +3,22 @@
 # Each launch opens its own window:  open -n -a "Trinidad Head" --args <command>
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-APP="$HOME/Applications/Trinidad Head.app"
+# TH_APP_OUT puts the app somewhere else (the release packager uses it); TH_UNIVERSAL=1 builds
+# one app that runs on both Apple Silicon and Intel Macs.
+APP="${TH_APP_OUT:-$HOME/Applications/Trinidad Head.app}"
 CARGO="${CARGO:-$HOME/.cargo/bin/cargo}"
 
 cd "$ROOT"
-"$CARGO" build --release -p trinidad-head
+if [ "${TH_UNIVERSAL:-}" = 1 ]; then
+  "$CARGO" build --release -p trinidad-head --target aarch64-apple-darwin
+  "$CARGO" build --release -p trinidad-head --target x86_64-apple-darwin
+  BIN="$ROOT/target/universal/trinidad-head"
+  mkdir -p "$(dirname "$BIN")"
+  lipo -create -output "$BIN" "$ROOT/target/aarch64-apple-darwin/release/trinidad-head" "$ROOT/target/x86_64-apple-darwin/release/trinidad-head"
+else
+  "$CARGO" build --release -p trinidad-head
+  BIN="$ROOT/target/release/trinidad-head"
+fi
 
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
@@ -25,7 +36,7 @@ iconutil -c icns "$ICONSET" -o "$WORK/AppIcon.icns"
 VERSION="$(sed -n 's/^version = "\(.*\)"/\1/p' "$ROOT/Cargo.toml" | head -1)"
 STAGE="$WORK/Trinidad Head.app"
 mkdir -p "$STAGE/Contents/MacOS" "$STAGE/Contents/Resources"
-cp "$ROOT/target/release/trinidad-head" "$STAGE/Contents/MacOS/trinidad-head"
+cp "$BIN" "$STAGE/Contents/MacOS/trinidad-head"
 cp "$WORK/AppIcon.icns" "$STAGE/Contents/Resources/AppIcon.icns"
 cat > "$STAGE/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -99,7 +110,7 @@ SIGN
   fi
 fi
 
-mkdir -p "$HOME/Applications"
+mkdir -p "$(dirname "$APP")"
 rm -rf "$APP"
 mv "$STAGE" "$APP"
 touch "$APP"

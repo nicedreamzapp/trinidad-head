@@ -19,7 +19,7 @@ dependencies = [
 
 [[package]]
 name = "core-vt"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "unicode-width",
 ]
@@ -221,7 +221,7 @@ dependencies = [
 
 [[package]]
 name = "pty"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "libc",
  "windows",
@@ -249,7 +249,7 @@ dependencies = [
 
 [[package]]
 name = "trinidad-head"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "block2",
  "core-vt",
