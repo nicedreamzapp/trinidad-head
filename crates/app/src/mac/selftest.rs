@@ -1005,11 +1005,16 @@ fn claude_select_steps() -> Vec<Step> {
         append(&format!("NOTE at the drag: mouse tracking {mode}, alt screen {alt}, scrollback {back}, selecting {}, selection {}", c.view.selecting_for_test(), c.has_sel()));
         std::fs::write("/tmp/th_claude_select_screen.txt", c.screen_text()).ok();
     }));
-    s.push(act(2.6, |_| {}));
+    s.push(poll(0.25, 60, |c| c.view.is_frozen(), |c, ok| {
+        let (rows, freezes, ticks) = c.view.frozen_state();
+        c.check("the drag past the edge puts up a still picture of Claude Code", ok, format!("{rows} rows, {freezes} pictures, {ticks} ticks"));
+        append(&format!("NOTE still picture holds {rows} rows after {ticks} ticks"));
+    }));
+    s.push(act(1.5, |_| {}));
     s.push(act(0.1, |c| {
         let (_cols, rows) = c.term_size();
-        let (banked, stuck, ticks) = c.view.harvest_state();
-        append(&format!("NOTE harvest {banked} lines over {ticks} ticks, {stuck} of them idle"));
+        let (frozen_rows, _freezes, ticks) = c.view.frozen_state();
+        append(&format!("NOTE picture {frozen_rows} rows over {ticks} ticks"));
         append(&format!("NOTE after the hold: selecting {}, selection {}", c.view.selecting_for_test(), c.has_sel()));
         c.check("the selection survived Claude Code repainting", c.has_sel(), "no selection");
         let (x, _) = c.cell_point(rows - 1, 0);
@@ -1145,14 +1150,19 @@ fn claude_steps() -> Vec<Step> {
 
 /// Selecting past the edge inside a program that owns the screen. The window runs
 /// `scripts/fullscreen-child.py`, which behaves like Claude Code: alternate screen, mouse
-/// tracking on, 300 lines it keeps to itself and paints one screen of. None of that text is
-/// in our scrollback, so this is the case that grid coordinates cannot express.
+/// tracking on, 300 lines it keeps to itself and paints one screen of. None of that text is in
+/// our scrollback, so reaching past the edge means gathering the program's rows and holding
+/// them still — Matt's complaint was that the old way scrolled the program under his hand,
+/// which flashed, moved the text he was pointing at and ended up copying the whole window.
 fn program_steps() -> Vec<Step> {
     let start: Rc<Cell<(usize, usize)>> = Rc::new(Cell::new((0, 0)));
     let mut s: Vec<Step> = Vec::new();
 
     fn line_no(text: &str) -> usize {
         text.rsplit('-').next().and_then(|n| n.trim().parse().ok()).unwrap_or(0)
+    }
+    fn top_line(c: &Ctx) -> usize {
+        line_no(c.screen_text().lines().next().unwrap_or(""))
     }
 
     // Wait for the program to paint, then press on the bottom row and hold the pointer above
@@ -1166,10 +1176,13 @@ fn program_steps() -> Vec<Step> {
             move |c, ok| {
                 c.check("the full-screen program painted", ok, c.screen_text());
                 let (_cols, rows) = c.term_size();
-                let first = line_no(c.screen_text().lines().next().unwrap_or(""));
-                rec.set((first, rows));
+                rec.set((top_line(c), rows));
                 c.set_pasteboard("before");
-                let (x, y) = c.cell_point(rows - 1, 0);
+                // Press in the MIDDLE of the screen, at the end of that row, and drag up: the
+                // rows below the finger must stay out of it. Anchoring to the whole screen
+                // instead — the old bug — copies the window.
+                let (cols, _) = c.term_size();
+                let (x, y) = c.cell_point(rows / 2, cols - 1);
                 let top = c.view.layout().text.t as f64 - 20.0;
                 c.mouse(NSEventType::LeftMouseDown, x, y, NSEventModifierFlags::empty());
                 c.mouse(NSEventType::LeftMouseDragged, x, y - 8.0, NSEventModifierFlags::empty());
@@ -1177,22 +1190,33 @@ fn program_steps() -> Vec<Step> {
             },
         ));
     }
-    // A poll runs the next step 0.1s later, so the hold gets a step of its own.
-    s.push(act(2.5, |_| {}));
+    // A poll runs the next step 0.1s later, so the gathering gets steps of its own.
+    s.push(poll(0.25, 60, |c| c.view.is_frozen(), |c, ok| {
+        let (rows, freezes, ticks) = c.view.frozen_state();
+        c.check("the drag past the edge puts up a still picture", ok, format!("{rows} rows, {freezes} pictures, {ticks} ticks"));
+        append(&format!("NOTE still picture holds {rows} rows after {ticks} ticks"));
+    }));
+    // Let the drag sit there a while: a still picture must actually stay still.
     {
         let rec = start.clone();
-        s.push(act(0.1, move |c| {
-            let (first, rows) = rec.get();
-            let now = line_no(c.screen_text().lines().next().unwrap_or(""));
+        s.push(act(1.5, move |c| {
+            let (first, _rows) = rec.get();
+            let now = top_line(c);
             c.check(
-                "holding the drag above the edge makes the program scroll",
-                now > 0 && now < first,
+                "the program is left where it was, not scrolled away under him",
+                now == first,
                 format!("top line {first} -> {now}"),
             );
-            c.check("the selection survived the program repainting", c.has_sel(), "no selection");
-            let (banked, stuck, ticks) = c.view.harvest_state();
-            append(&format!("NOTE harvest {banked} lines over {ticks} ticks, {stuck} of them idle"));
-            let (x, _) = c.cell_point(rows - 1, 0);
+        }));
+    }
+    {
+        let rec = start.clone();
+        s.push(act(1.0, move |c| {
+            let (first, rows) = rec.get();
+            let now = top_line(c);
+            c.check("and it stays there while the drag is held", now == first, format!("top line {first} -> {now}"));
+            c.check("the selection is still there", c.has_sel(), "no selection");
+            let (x, _) = c.cell_point(rows / 2, 0);
             let top = c.view.layout().text.t as f64 - 20.0;
             c.mouse(NSEventType::LeftMouseUp, x, top, NSEventModifierFlags::empty());
             c.key("c", "c", NSEventModifierFlags::Command, 8);
@@ -1219,6 +1243,35 @@ fn program_steps() -> Vec<Step> {
                 "the copy reaches back past where the screen started",
                 nums.first().is_some_and(|&n| n < first),
                 format!("copy starts at {:?}; the screen started at {first}", nums.first()),
+            );
+            // He pressed halfway down the screen, so that is where the copy ends. The old way
+            // re-anchored to the top-left corner and handed back the whole window.
+            let anchor_line = first + rows / 2;
+            c.check(
+                "the copy stops where he put his finger down",
+                nums.last().is_some_and(|&n| n == anchor_line),
+                format!("copy ends at {:?}; he pressed on line {anchor_line}", nums.last()),
+            );
+            c.check(
+                "nothing below his finger is copied",
+                nums.iter().all(|&n| n <= anchor_line),
+                format!("copied up to {:?}, past line {anchor_line}", nums.iter().max()),
+            );
+        }));
+    }
+    // Escape puts the picture away and the live program comes back untouched.
+    s.push(act(0.3, |c| {
+        c.key("\u{1b}", "\u{1b}", NSEventModifierFlags::empty(), 53);
+    }));
+    {
+        let rec = start.clone();
+        s.push(act(0.4, move |c| {
+            let (first, _rows) = rec.get();
+            c.check("escape puts the still picture away", !c.view.is_frozen(), "still frozen");
+            c.check(
+                "and the program is exactly where it was left",
+                top_line(c) == first,
+                format!("top line {first} -> {}", top_line(c)),
             );
             append("DONE");
             c.close_window();

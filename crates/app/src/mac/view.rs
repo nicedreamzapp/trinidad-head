@@ -28,7 +28,7 @@ use super::paint::{self, rgba};
 use super::Shared;
 use crate::latency::Meter;
 use crate::layout::{Button, Hit, Layout};
-use crate::textutil::Harvest;
+use crate::textutil::{Collect, Frozen};
 use crate::theme::{self, GLOWS};
 
 const FONT_SIZE: f64 = 14.0;
@@ -81,8 +81,18 @@ pub struct ViewState {
     /// Autoscroll ticks so far (the self-test reads it, to tell a stalled timer from a
     /// program that simply had nothing more to show).
     ticks: u64,
-    /// Set while a drag runs past an edge inside a program that owns the screen.
-    harvest: Option<Harvest>,
+    /// A still picture of a program's screen, put up when a drag runs past an edge inside a
+    /// program that owns the screen. While it is up nothing under it moves: the selection is
+    /// made in here, against text that stays where it was put.
+    frozen: Option<Frozen>,
+    /// Rows being gathered out of the program, before the picture goes up.
+    collect: Option<Collect>,
+    collect_timer: Option<Retained<NSTimer>>,
+    /// Where the drag started, as a screen row and column, so the selection can be re-anchored
+    /// to the same text once the picture is frozen.
+    press_cell: Option<(usize, usize)>,
+    /// Still pictures put up so far, for the self-test.
+    freezes: u64,
 }
 
 define_class!(
@@ -303,6 +313,11 @@ define_class!(
         #[unsafe(method(autoscrollTick:))]
         fn autoscroll_tick(&self, _timer: Option<&NSTimer>) {
             self.autoscroll_step();
+        }
+
+        #[unsafe(method(collectTick:))]
+        fn collect_tick(&self, _timer: Option<&NSTimer>) {
+            self.collect_step();
         }
 
         // Older-style entry point some input methods still use.
@@ -537,7 +552,11 @@ impl TermView {
             autoscroll: None,
             drag_pt: (0.0, 0.0),
             ticks: 0,
-            harvest: None,
+            frozen: None,
+            collect: None,
+            collect_timer: None,
+            press_cell: None,
+            freezes: 0,
         };
         let this = Self::alloc(mtm).set_ivars(RefCell::new(state));
         let this: Retained<Self> = unsafe { msg_send![super(this), initWithFrame: frame] };
@@ -580,7 +599,8 @@ impl TermView {
     fn send(&self, bytes: &[u8]) {
         let mut st = self.ivars().borrow_mut();
         st.sel = None;
-        st.harvest = None;
+        st.frozen = None;
+        st.collect = None;
         st.scroll_offset = 0;
         st.meter.key(Instant::now());
         let _ = st.pty.lock().unwrap().write(bytes);
@@ -614,6 +634,15 @@ impl TermView {
 
     fn on_key_down(&self, event: &NSEvent) {
         let flags = event.modifierFlags();
+        if self.ivars().borrow().frozen.is_some() {
+            // Escape puts the still picture away and leaves the program untouched. Every other
+            // key goes to the program, which drops the picture on its way through send().
+            let esc = event.charactersIgnoringModifiers().map(|s| s.to_string()).unwrap_or_default();
+            if esc == "\u{1b}" {
+                self.unfreeze();
+                return;
+            }
+        }
         if flags.contains(NSEventModifierFlags::Command) {
             // Normally handled by performKeyEquivalent before keyDown; this covers events
             // delivered straight to the window.
@@ -692,13 +721,14 @@ impl TermView {
         self.copy_selection();
         let mut st = self.ivars().borrow_mut();
         st.sel = None;
-        st.harvest = None;
+        // Copying out of a still picture is the end of the job: back to the live screen.
+        st.frozen = None;
         drop(st);
         self.setNeedsDisplay(true);
     }
 
     fn select_all(&self) {
-        self.ivars().borrow_mut().harvest = None;
+        self.ivars().borrow_mut().frozen = None;
         let total = {
             let st = self.ivars().borrow();
             let s = st.shared.lock().unwrap();
@@ -790,17 +820,21 @@ impl TermView {
         self.ivars().borrow().selecting
     }
 
-    /// Lines gathered from a full-screen program, ticks where nothing moved, and autoscroll
-    /// ticks in total (the self-test reads all three).
-    pub(super) fn harvest_state(&self) -> (usize, u32, u64) {
+    /// Rows in the still picture, pictures put up so far, and autoscroll ticks in total
+    /// (the self-test reads all three).
+    pub(super) fn frozen_state(&self) -> (usize, u64, u64) {
         let st = self.ivars().borrow();
-        let (n, stuck) = st.harvest.as_ref().map(|h| (h.lines.len(), h.stuck)).unwrap_or((0, 0));
-        (n, stuck, st.ticks)
+        (st.frozen.as_ref().map(|f| f.rows.len()).unwrap_or(0), st.freezes, st.ticks)
+    }
+
+    /// True while the still picture is up and nothing underneath is moving.
+    pub(super) fn is_frozen(&self) -> bool {
+        self.ivars().borrow().frozen.is_some()
     }
 
     pub fn has_selection(&self) -> bool {
         let st = self.ivars().borrow();
-        st.harvest.as_ref().is_some_and(|h| !h.lines.is_empty()) || matches!(st.sel, Some((a, b)) if a != b)
+        matches!(st.sel, Some((a, b)) if a != b)
     }
 
     /// How many lines the view is scrolled back from the live screen (the self-test reads it).
@@ -909,9 +943,10 @@ impl TermView {
     fn copy_selection(&self) {
         let text = {
             let st = self.ivars().borrow();
-            if let Some(h) = st.harvest.as_ref() {
-                // Gathered out of a full-screen program a screen at a time.
-                h.text()
+            if let Some(f) = st.frozen.as_ref() {
+                // Rows gathered out of a full-screen program and held still to select in.
+                let Some((a, b)) = st.sel else { return };
+                f.text(a, b)
             } else {
                 let Some((a, b)) = st.sel else { return };
                 let s = st.shared.lock().unwrap();
@@ -1024,6 +1059,17 @@ impl TermView {
                     self.context_menu(event);
                     return;
                 }
+                if in_text && self.ivars().borrow().frozen.is_some() {
+                    // The picture is still up: this press selects in it, the program never sees it.
+                    let p = self.frozen_cell(x, y);
+                    let mut st = self.ivars().borrow_mut();
+                    st.sel = Some((p, p));
+                    st.selecting = true;
+                    st.drag_pt = (x, y);
+                    drop(st);
+                    self.setNeedsDisplay(true);
+                    return;
+                }
                 if in_text && !shift && self.mouse_mode().0 != 0 {
                     // The program handles clicks (e.g. Claude Code's full-screen view), but a
                     // drag still selects text here. Hold the press until we know which it is.
@@ -1031,8 +1077,9 @@ impl TermView {
                     let p = self.cell_at(x, y);
                     let mut st = self.ivars().borrow_mut();
                     st.pending_press = Some((cell, Self::mouse_mods(event), p));
+                    st.press_cell = Some(cell);
                     st.sel = None;
-                    st.harvest = None;
+                    st.frozen = None;
                     drop(st);
                     self.setNeedsDisplay(true);
                     return;
@@ -1043,7 +1090,8 @@ impl TermView {
                     st.sel = Some((p, p));
                     st.selecting = true;
                     st.drag_pt = (x, y);
-                    st.harvest = None;
+                    st.press_cell = Some(self.screen_cell(x, y));
+                    st.frozen = None;
                     drop(st);
                     self.setNeedsDisplay(true);
                 }
@@ -1072,52 +1120,131 @@ impl TermView {
         (0..s.term.rows()).map(|r| s.term.row_text(r)).collect()
     }
 
-    /// The selected text as lines, for seeding a harvest with what is already on screen.
-    fn selection_lines(&self) -> Vec<String> {
+    /// The visible rows with their colors, for the still picture.
+    fn visible_cells(&self) -> Vec<Vec<Cell>> {
         let st = self.ivars().borrow();
-        let Some((a, b)) = st.sel else { return Vec::new() };
         let s = st.shared.lock().unwrap();
-        s.term.text_between(a, b).lines().map(|l| l.to_string()).collect()
+        (0..s.term.rows()).map(|r| s.term.line(r, 0).to_vec()).collect()
     }
 
-    /// While harvesting, everything on screen is part of the selection: the anchor scrolled
-    /// away long ago, so highlighting a range from it would be a lie.
-    fn select_whole_screen(&self) {
-        let mut st = self.ivars().borrow_mut();
-        let (base, rows, cols) = {
+    /// A point in the window as a (row, column) of the still picture.
+    fn frozen_cell(&self, x: f32, y: f32) -> (usize, usize) {
+        let st = self.ivars().borrow();
+        let t = st.layout.text;
+        let (rows, cols) = {
             let s = st.shared.lock().unwrap();
-            (s.term.scrollback_len(), s.term.rows(), s.term.cols())
+            (s.term.rows(), s.term.cols())
         };
-        st.sel = Some(((base, 0), (base + rows.saturating_sub(1), cols.saturating_sub(1))));
+        let row = ((y - t.t) as f64 / st.cell_h).floor().clamp(0.0, (rows - 1) as f64) as usize;
+        let col = ((x - t.l) as f64 / st.cell_w).floor().clamp(0.0, (cols - 1) as f64) as usize;
+        match st.frozen.as_ref() {
+            Some(f) => (f.row_at(row), col),
+            None => (row, col),
+        }
     }
 
-    /// One step of selecting through a full-screen program: bank whatever it uncovered since
-    /// last time, then ask it for one more notch. Returns false when it has stopped moving.
-    fn harvest_step(&self, up: bool) -> bool {
-        let now = self.visible_rows();
-        let rows = now.len();
-        if rows == 0 {
-            return false;
+    /// A drag has run past an edge inside a program that owns the screen. The rows being
+    /// reached for are the program's, not ours, so instead of scrolling it under his hand —
+    /// which repaints the whole grid and moves the text he is pointing at — gather them now,
+    /// put the program back where it was, and hold the result still to select in.
+    fn start_collect(&self) {
+        if self.ivars().borrow().collect.is_some() || self.ivars().borrow().frozen.is_some() {
+            return;
         }
-        let fresh = self.ivars().borrow().harvest.is_none();
-        let seed = if fresh { self.selection_lines() } else { Vec::new() };
+        self.stop_autoscroll();
+        let text = self.visible_rows();
+        if text.is_empty() {
+            return;
+        }
+        let cells = self.visible_cells();
+        self.ivars().borrow_mut().collect = Some(Collect::new(text, cells));
+        self.wheel_program(true);
+        let timer = unsafe {
+            NSTimer::timerWithTimeInterval_target_selector_userInfo_repeats(0.02, self, sel!(collectTick:), None, true)
+        };
+        unsafe { NSRunLoop::currentRunLoop().addTimer_forMode(&timer, NSRunLoopCommonModes) };
+        self.ivars().borrow_mut().collect_timer = Some(timer);
+    }
+
+    /// One notch to the program, which asked for the mouse, so this is what it expects.
+    fn wheel_program(&self, up: bool) {
+        let cell = {
+            let st = self.ivars().borrow();
+            let (x, y) = st.drag_pt;
+            drop(st);
+            self.screen_cell(x, y)
+        };
+        self.report_mouse(if up { 64 } else { 65 }, cell, true);
+    }
+
+    /// Nothing is repainted while this runs: the window keeps showing the picture it had, so
+    /// the gathering never flickers past.
+    fn collect_step(&self) {
+        let text = self.visible_rows();
+        let cells = self.visible_cells();
         let keep_going = {
             let mut st = self.ivars().borrow_mut();
-            match st.harvest.as_mut() {
-                None => {
-                    st.harvest = Some(Harvest::new(up, now, seed));
-                    true
+            match st.collect.as_mut() {
+                None => false,
+                Some(c) => {
+                    c.steps += 1;
+                    c.absorb(text, cells) && c.steps < 400
                 }
-                Some(h) => h.absorb(now),
             }
         };
-        self.select_whole_screen();
         if keep_going {
-            // The program asked for the mouse, so a wheel report is what it expects.
-            let cell = self.screen_cell(self.ivars().borrow().drag_pt.0, self.ivars().borrow().drag_pt.1);
-            self.report_mouse(if up { 64 } else { 65 }, cell, true);
+            self.wheel_program(true);
+            return;
         }
-        keep_going
+        self.finish_collect();
+    }
+
+    /// Put the program back where it was, then freeze what was gathered.
+    fn finish_collect(&self) {
+        let timer = self.ivars().borrow_mut().collect_timer.take();
+        if let Some(t) = timer {
+            t.invalidate();
+        }
+        let Some(collected) = self.ivars().borrow_mut().collect.take() else { return };
+        for _ in 0..collected.steps {
+            self.wheel_program(false);
+        }
+        let (rows, press) = {
+            let st = self.ivars().borrow();
+            let s = st.shared.lock().unwrap();
+            (s.term.rows(), st.press_cell)
+        };
+        let frozen = Frozen::new(collected.rows, rows);
+        // The screen he pressed on is the bottom of the picture, so his anchor is still under
+        // the same text it was under when he pressed.
+        let anchor_row = frozen.rows.len().saturating_sub(rows) + press.map(|c| c.0).unwrap_or(0);
+        let anchor = (anchor_row.min(frozen.rows.len().saturating_sub(1)), press.map(|c| c.1).unwrap_or(0));
+        {
+            let mut st = self.ivars().borrow_mut();
+            st.frozen = Some(frozen);
+            st.freezes += 1;
+            st.sel = Some((anchor, anchor));
+        }
+        // Stretch to wherever the pointer is now, and keep scrolling if he is still past the edge.
+        let (x, y) = self.ivars().borrow().drag_pt;
+        let p = self.frozen_cell(x, y);
+        if let Some(sel) = self.ivars().borrow_mut().sel.as_mut() {
+            sel.1 = p;
+        }
+        self.update_autoscroll();
+        self.setNeedsDisplay(true);
+    }
+
+    /// Back to the live screen.
+    fn unfreeze(&self) {
+        let was = {
+            let mut st = self.ivars().borrow_mut();
+            st.sel = None;
+            st.frozen.take().is_some()
+        };
+        if was {
+            self.setNeedsDisplay(true);
+        }
     }
 
     /// Lines to scroll per tick while a drag is held past an edge of the text area:
@@ -1184,12 +1311,35 @@ impl TermView {
             self.stop_autoscroll();
             return;
         }
-        if self.program_owns_screen() {
-            // The rows we are reaching for belong to the program, not to our scrollback.
-            if !self.harvest_step(lines > 0) {
-                self.stop_autoscroll();
+        if self.ivars().borrow().frozen.is_some() {
+            // Scrolling the still picture: nothing underneath moves, so the text he is pointing
+            // at stays the text he was pointing at.
+            let screen_rows = { self.ivars().borrow().shared.lock().unwrap().term.rows() };
+            let moved = {
+                let mut st = self.ivars().borrow_mut();
+                st.frozen.as_mut().is_some_and(|f| f.scroll(lines, screen_rows))
+            };
+            // Read the pointer's row AFTER the scroll, so the selection follows the picture.
+            let p = self.frozen_cell(x, y);
+            let stretched = {
+                let mut st = self.ivars().borrow_mut();
+                match st.sel.as_mut() {
+                    Some(sel) if sel.1 != p => {
+                        sel.1 = p;
+                        true
+                    }
+                    _ => false,
+                }
+            };
+            if moved || stretched {
+                self.setNeedsDisplay(true);
             }
-            self.setNeedsDisplay(true);
+            return;
+        }
+        if self.program_owns_screen() {
+            // The rows we are reaching for belong to the program, not to our scrollback:
+            // gather them and hold them still instead of scrolling it under his hand.
+            self.start_collect();
             return;
         }
         let moved = {
@@ -1320,12 +1470,12 @@ impl TermView {
         }
         let selecting = std::mem::take(&mut self.ivars().borrow_mut().selecting);
         if selecting {
-            let (sel, harvested) = {
+            let (sel, frozen) = {
                 let st = self.ivars().borrow();
-                (st.sel, st.harvest.is_some())
+                (st.sel, st.frozen.is_some())
             };
             // The selection stays on screen; copying waits for Cmd+C or the right-click menu.
-            if !harvested && !matches!(sel, Some((a, b)) if a != b) {
+            if !frozen && !matches!(sel, Some((a, b)) if a != b) {
                 self.ivars().borrow_mut().sel = None;
             }
             self.setNeedsDisplay(true);
@@ -1449,13 +1599,31 @@ impl TermView {
         let shift = event.modifierFlags().contains(NSEventModifierFlags::Shift);
         let (mode, _) = self.mouse_mode();
         let (x, y) = self.point(event);
+        if self.ivars().borrow().frozen.is_some() {
+            let screen_rows = { self.ivars().borrow().shared.lock().unwrap().term.rows() };
+            let delta = event.scrollingDeltaY();
+            let lines = if event.hasPreciseScrollingDeltas() {
+                let mut st = self.ivars().borrow_mut();
+                st.scroll_accum += delta / st.cell_h;
+                let whole = st.scroll_accum.trunc();
+                st.scroll_accum -= whole;
+                whole as i64
+            } else {
+                (notch(delta) * 3.0) as i64
+            };
+            if lines != 0 {
+                let mut st = self.ivars().borrow_mut();
+                if st.frozen.as_mut().is_some_and(|f| f.scroll(lines, screen_rows)) {
+                    drop(st);
+                    self.setNeedsDisplay(true);
+                }
+            }
+            return;
+        }
         if self.ivars().borrow().selecting && self.program_owns_screen() {
-            // Scrolling by hand in the middle of a selection: the program repaints, so bank
-            // what it uncovers instead of letting the selection slide onto new text.
-            let up = event.scrollingDeltaY() > 0.0;
+            // Reaching past the edge by wheel, mid-selection: same answer as dragging past it.
             self.ivars().borrow_mut().drag_pt = (x, y);
-            self.harvest_step(up);
-            self.setNeedsDisplay(true);
+            self.start_collect();
             return;
         }
         if mode != 0 && !shift {
@@ -1560,6 +1728,21 @@ impl TermView {
         let (cw, ch) = (st.cell_w, st.cell_h);
         let (left, top) = (l.text.l as f64, l.text.t as f64);
         let offset = st.scroll_offset.min(term.scrollback_len());
+        // The rows on screen: the live grid, or the still picture while one is up. Taking a
+        // copy once per frame keeps the rest of the drawing identical for both.
+        let rows_now: Vec<Vec<Cell>> = match st.frozen.as_ref() {
+            Some(f) => (0..term.rows())
+                .map(|r| f.rows.get(f.offset + r).cloned().unwrap_or_default())
+                .collect(),
+            None => (0..term.rows()).map(|r| term.line(r, offset).to_vec()).collect(),
+        };
+        // Where a screen row sits in whatever the selection is measured against.
+        let abs_of = |row: usize| -> usize {
+            match st.frozen.as_ref() {
+                Some(f) => f.offset + row,
+                None => term.scrollback_len() - offset + row,
+            }
+        };
         let default_fg = rgba(theme::TEXT, 1.0);
         let sel = st.sel.map(|(a, b)| if a <= b { (a, b) } else { (b, a) });
         let (ur, ug, ub) = st.user_bar;
@@ -1569,13 +1752,13 @@ impl TermView {
         // Claude's prompt bar: one rounded see-through pill per block of rows, with the text
         // inside drawn one size bigger (same rules as the Windows build).
         let bar_span = |row: usize| -> Option<(usize, usize)> {
-            let line = term.line(row, offset);
+            let line = &rows_now[row];
             let first = line.iter().position(|c| is_bar(c.attrs.bg))?;
             let last = line.iter().rposition(|c| is_bar(c.attrs.bg))?;
             Some((first, last + 1))
         };
         let text_end = |row: usize, from: usize| -> usize {
-            let line = term.line(row, offset);
+            let line = &rows_now[row];
             line.iter()
                 .enumerate()
                 .rev()
@@ -1622,10 +1805,10 @@ impl TermView {
         }
 
         for row in 0..term.rows() {
-            let line = term.line(row, offset);
+            let line = &rows_now[row];
             let y = top + row as f64 * ch;
             if let Some((sa, sb)) = sel {
-                let abs = term.scrollback_len() - offset + row;
+                let abs = abs_of(row);
                 if abs >= sa.0 && abs <= sb.0 {
                     let c0 = if abs == sa.0 { sa.1 } else { 0 };
                     let c1 = if abs == sb.0 { sb.1 + 1 } else { term.cols() };
@@ -1686,7 +1869,7 @@ impl TermView {
         }
 
         // Cursor in the glow color; input-method text shows at the cursor while composing.
-        if term.cursor_visible && offset == 0 {
+        if term.cursor_visible && offset == 0 && st.frozen.is_none() {
             let (cr, cc) = term.cursor();
             let x = left + cc as f64 * cw;
             let y = top + cr as f64 * ch;
@@ -1725,11 +1908,33 @@ impl TermView {
             }
         }
 
-        // Scrolled back: a thin bar on the right shows where we are.
-        if offset > 0 {
-            let total = (term.scrollback_len() + term.rows()) as f64;
+        // A still picture is up: say so quietly, bottom right, and say how to leave.
+        if st.frozen.is_some() {
+            let hint = "held still  ·  \u{2318}C copies  ·  esc back";
+            let w = hint.chars().count() as f64 * cw * 0.62;
+            let pad = 8.0;
+            let r = crate::layout::Rect {
+                l: (l.text.r as f64 - w - pad * 2.0) as f32,
+                t: (l.text.b as f64 - ch - 6.0) as f32,
+                r: l.text.r,
+                b: (l.text.b as f64 - 4.0) as f32,
+            };
+            paint::rounded_fill(&cg, r, (r.h() / 2.0) as f64, rgba(theme::BODY, 0.82));
+            paint::rounded_stroke(&cg, r, (r.h() / 2.0) as f64, 1.0, rgba(glow.accent(), 0.35));
+            let mut small = Attrs::default();
+            small.dim = true;
+            draw_run(&st.fonts, hint, &small, rgba(glow.accent(), 0.85), r.l as f64 + pad, r.t as f64 + 1.0);
+        }
+
+        // Scrolled back, in our history or in the still picture: a thin bar on the right.
+        let (back, total) = match st.frozen.as_ref() {
+            Some(f) => (f.rows.len().saturating_sub(term.rows()) - f.offset.min(f.rows.len()), f.rows.len()),
+            None => (offset, term.scrollback_len() + term.rows()),
+        };
+        if back > 0 {
+            let total = total as f64;
             let th = l.text.h() as f64;
-            let t = top + (term.scrollback_len() - offset) as f64 / total * th;
+            let t = top + (total - back as f64 - term.rows() as f64).max(0.0) / total * th;
             let len = (term.rows() as f64 / total * th).max(10.0);
             let bar = crate::layout::Rect::new(l.text.r + 10.0, t as f32, 3.0, len as f32);
             paint::rounded_fill(&cg, bar, 1.5, rgba(glow.accent(), 0.5));

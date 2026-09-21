@@ -311,3 +311,193 @@ mod harvest_tests {
         assert!(h.absorb(Vec::new()) || true);
     }
 }
+
+/// A still picture of a program's screen, gathered by scrolling it, that the person can then
+/// scroll and select through like ordinary text. Nothing underneath moves while it is up:
+/// this is what makes selecting inside Claude Code calm instead of a moving target.
+pub struct Frozen {
+    /// Every row gathered, oldest first, with the live screen last.
+    pub rows: Vec<Vec<core_vt::Cell>>,
+    /// Index of the row drawn at the top of the window.
+    pub offset: usize,
+}
+
+impl Frozen {
+    pub fn new(rows: Vec<Vec<core_vt::Cell>>, screen_rows: usize) -> Frozen {
+        let offset = rows.len().saturating_sub(screen_rows);
+        Frozen { rows, offset }
+    }
+
+    /// The last row that can sit at the top of the window without drawing past the end.
+    fn max_offset(&self, screen_rows: usize) -> usize {
+        self.rows.len().saturating_sub(screen_rows)
+    }
+
+    /// Positive scrolls back toward the start. True when the view actually moved.
+    pub fn scroll(&mut self, lines: i64, screen_rows: usize) -> bool {
+        let was = self.offset;
+        let max = self.max_offset(screen_rows) as i64;
+        self.offset = (was as i64 - lines).clamp(0, max) as usize;
+        self.offset != was
+    }
+
+    /// The row index for a window row, clamped to what exists.
+    pub fn row_at(&self, screen_row: usize) -> usize {
+        (self.offset + screen_row).min(self.rows.len().saturating_sub(1))
+    }
+
+    /// The text between two (row, column) points, inclusive: the same rules as selecting in
+    /// our own scrollback, so a selection that starts mid-line copies mid-line.
+    pub fn text(&self, a: (usize, usize), b: (usize, usize)) -> String {
+        cells_text(&self.rows, a, b)
+    }
+}
+
+/// Text between two points of a block of rows, inclusive, trailing spaces dropped.
+pub fn cells_text(rows: &[Vec<core_vt::Cell>], a: (usize, usize), b: (usize, usize)) -> String {
+    let (start, end) = if a <= b { (a, b) } else { (b, a) };
+    if rows.is_empty() {
+        return String::new();
+    }
+    let last = rows.len() - 1;
+    let mut out = String::new();
+    for i in start.0.min(last)..=end.0.min(last) {
+        let row = &rows[i];
+        let from = if i == start.0 { start.1.min(row.len()) } else { 0 };
+        let to = if i == end.0 { (end.1 + 1).min(row.len()) } else { row.len() };
+        let piece: String = row[from.min(to)..to].iter().filter(|c| !c.spacer).map(|c| c.ch).collect();
+        out.push_str(piece.trim_end());
+        if i != end.0.min(last) {
+            out.push('\n');
+        }
+    }
+    out
+}
+
+/// Gathering rows out of a program that owns the screen, one wheel notch at a time. Unlike
+/// [`Harvest`], which banked rows under a moving selection, this runs before anything is
+/// selected: it collects first, then hands the whole block over to be frozen.
+pub struct Collect {
+    /// The screen at the last step, to measure how far the program actually travelled.
+    last: Vec<String>,
+    /// Everything gathered so far, oldest first.
+    pub rows: Vec<Vec<core_vt::Cell>>,
+    /// Steps in a row where nothing moved: the program has no more to show.
+    pub stuck: u32,
+    /// Wheel notches asked for, so the same number can be given back afterwards.
+    pub steps: u32,
+}
+
+/// Stop asking after this many steps with nothing new, and never gather more than this many rows.
+const COLLECT_GIVE_UP: u32 = 8;
+const COLLECT_MAX_ROWS: usize = 5000;
+
+impl Collect {
+    /// Starts from the screen as it is now, which becomes the bottom of the still picture.
+    pub fn new(text: Vec<String>, cells: Vec<Vec<core_vt::Cell>>) -> Collect {
+        Collect { last: text, rows: cells, stuck: 0, steps: 0 }
+    }
+
+    /// Put whatever the program uncovered on top of what we have. False when it has stopped
+    /// moving or there is already more than anyone will select.
+    pub fn absorb(&mut self, text: Vec<String>, cells: Vec<Vec<core_vt::Cell>>) -> bool {
+        match fresh_rows(&self.last, &text, true) {
+            None => self.stuck += 1,
+            Some(r) => {
+                self.stuck = 0;
+                let mut head: Vec<Vec<core_vt::Cell>> = cells[r].to_vec();
+                head.append(&mut self.rows);
+                self.rows = head;
+            }
+        }
+        self.last = text;
+        self.stuck < COLLECT_GIVE_UP && self.rows.len() < COLLECT_MAX_ROWS
+    }
+}
+
+/// Which rows of `now` were not on `old`, in new-screen coordinates, or None if nothing moved.
+pub fn fresh_rows(old: &[String], now: &[String], up: bool) -> Option<std::ops::Range<usize>> {
+    match moved(old, now, up) {
+        Moved::Still => None,
+        Moved::Rows(r) => Some(r),
+        Moved::Jumped => Some(0..now.len()),
+    }
+}
+
+#[cfg(test)]
+mod frozen_tests {
+    use super::*;
+    use core_vt::Cell;
+
+    fn cells(s: &str) -> Vec<Cell> {
+        s.chars().map(|ch| Cell { ch, ..Cell::default() }).collect()
+    }
+    fn block(from: usize, n: usize) -> (Vec<String>, Vec<Vec<Cell>>) {
+        let text: Vec<String> = (from..from + n).map(|i| format!("line {i}")).collect();
+        let grid = text.iter().map(|l| cells(l)).collect();
+        (text, grid)
+    }
+
+    #[test]
+    fn a_selection_that_starts_mid_line_copies_mid_line() {
+        let rows = vec![cells("hello there"), cells("second row"), cells("third row")];
+        assert_eq!(cells_text(&rows, (0, 6), (2, 4)), "there\nsecond row\nthird");
+    }
+
+    #[test]
+    fn one_row_one_word() {
+        let rows = vec![cells("hello there")];
+        assert_eq!(cells_text(&rows, (0, 0), (0, 4)), "hello");
+    }
+
+    #[test]
+    fn a_backwards_drag_reads_the_same_as_a_forwards_one() {
+        let rows = vec![cells("hello there"), cells("second row")];
+        assert_eq!(cells_text(&rows, (1, 5), (0, 6)), cells_text(&rows, (0, 6), (1, 5)));
+    }
+
+    #[test]
+    fn collecting_stacks_the_older_screens_on_top() {
+        let (t0, c0) = block(10, 5);
+        let mut col = Collect::new(t0, c0);
+        let (t1, c1) = block(7, 5);
+        assert!(col.absorb(t1, c1));
+        let text: Vec<String> = col.rows.iter().map(|r| r.iter().map(|c| c.ch).collect()).collect();
+        assert_eq!(text, ["line 7", "line 8", "line 9", "line 10", "line 11", "line 12", "line 13", "line 14"]);
+    }
+
+    #[test]
+    fn collecting_stops_when_the_program_stops_moving() {
+        let (t0, c0) = block(10, 5);
+        let mut col = Collect::new(t0, c0);
+        for _ in 0..COLLECT_GIVE_UP - 1 {
+            let (t, c) = block(10, 5);
+            assert!(col.absorb(t, c));
+        }
+        let (t, c) = block(10, 5);
+        assert!(!col.absorb(t, c));
+    }
+
+    #[test]
+    fn the_still_picture_opens_at_the_bottom_and_scrolls_back() {
+        let rows: Vec<Vec<Cell>> = (0..20).map(|i| cells(&format!("line {i}"))).collect();
+        let mut f = Frozen::new(rows, 5);
+        assert_eq!(f.offset, 15, "opens showing the same rows the screen had");
+        assert!(f.scroll(3, 5));
+        assert_eq!(f.offset, 12);
+        assert!(f.scroll(100, 5));
+        assert_eq!(f.offset, 0, "stops at the top of what was gathered");
+        assert!(!f.scroll(5, 5), "and does not move past it");
+        assert!(f.scroll(-100, 5));
+        assert_eq!(f.offset, 15, "and back down to the live screen");
+    }
+
+    #[test]
+    fn the_text_it_hands_over_is_the_rows_it_shows() {
+        let rows: Vec<Vec<Cell>> = (0..20).map(|i| cells(&format!("line {i}"))).collect();
+        let f = Frozen::new(rows, 5);
+        assert_eq!(f.row_at(0), 15);
+        assert_eq!(f.text((15, 0), (16, 6)), "line 15\nline 16");
+        assert_eq!(f.text((15, 0), (16, 3)), "line 15\nline", "the last row stops where the drag stopped");
+    }
+}
