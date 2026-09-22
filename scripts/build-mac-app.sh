@@ -55,6 +55,8 @@ cat > "$STAGE/Contents/Info.plist" <<PLIST
   <key>LSMinimumSystemVersion</key><string>14.0</string>
   <key>NSHighResolutionCapable</key><true/>
   <key>NSSupportsAutomaticGraphicsSwitching</key><true/>
+  <key>NSMicrophoneUsageDescription</key><string>Programs run in Trinidad Head (like voice dictation) use the microphone.</string>
+  <key>NSSpeechRecognitionUsageDescription</key><string>Programs run in Trinidad Head (like voice dictation) transcribe speech.</string>
 </dict>
 </plist>
 PLIST
