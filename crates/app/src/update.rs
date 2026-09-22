@@ -66,8 +66,24 @@ fn is_repo(p: &Path) -> bool {
     p.join(".git").exists() && p.join("crates/app/Cargo.toml").exists()
 }
 
+/// Windows hands a console program its own console when the parent has none, and Trinidad Head
+/// is a windowed program with no console, so every git and every cargo the updater runs would
+/// otherwise flash up a terminal window of its own — Windows Terminal, if that is the default.
+/// The update is meant to be invisible; this keeps it that way.
+#[cfg(windows)]
+fn quiet(cmd: &mut Command) -> &mut Command {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    cmd.creation_flags(CREATE_NO_WINDOW)
+}
+
+#[cfg(not(windows))]
+fn quiet(cmd: &mut Command) -> &mut Command {
+    cmd
+}
+
 fn git(dir: &Path, args: &[&str]) -> Option<String> {
-    let out = Command::new("git").current_dir(dir).args(args).output().ok()?;
+    let out = quiet(Command::new("git").current_dir(dir).args(args)).output().ok()?;
     out.status.success().then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
@@ -150,7 +166,9 @@ fn build_and_install(dir: &Path) -> Result<(), String> {
 }
 
 fn run(cmd: &mut Command) -> Result<(), String> {
-    let out = cmd.output().map_err(|e| format!("{e}"))?;
+    // quiet() here covers the whole build: cargo gets a console with no window, and rustc and
+    // the linker under it inherit that console rather than each opening one of their own.
+    let out = quiet(cmd).output().map_err(|e| format!("{e}"))?;
     if out.status.success() {
         Ok(())
     } else {
