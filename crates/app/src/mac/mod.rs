@@ -2,6 +2,7 @@
 //! rim, window buttons, sidebar) is drawn by us, matching the Windows version.
 
 mod control;
+mod dock;
 mod keys;
 mod paint;
 mod selftest;
@@ -17,7 +18,7 @@ use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
 use objc2::{define_class, msg_send, sel, MainThreadMarker, MainThreadOnly, Message};
 use objc2_app_kit::{
-    NSApplication, NSApplicationActivationPolicy, NSApplicationDelegate, NSBackingStoreType, NSColor, NSMenu,
+    NSApplication, NSApplicationDelegate, NSBackingStoreType, NSColor, NSMenu,
     NSMenuItem, NSWindow, NSWindowStyleMask,
 };
 use objc2_foundation::{ns_string, NSObject, NSObjectProtocol, NSPoint, NSRect, NSSize};
@@ -83,6 +84,12 @@ define_class!(
         #[unsafe(method(applicationShouldTerminateAfterLastWindowClosed:))]
         fn should_terminate(&self, _app: &NSApplication) -> bool {
             true
+        }
+
+        #[unsafe(method(applicationShouldHandleReopen:hasVisibleWindows:))]
+        fn should_handle_reopen(&self, _app: &NSApplication, _visible: bool) -> bool {
+            dock::bring_all_forward();
+            false
         }
 
         #[unsafe(method(applicationWillTerminate:))]
@@ -165,7 +172,7 @@ pub fn run() {
     let started = Instant::now();
     let mtm = MainThreadMarker::new().expect("must start on the main thread");
     let app = NSApplication::sharedApplication(mtm);
-    app.setActivationPolicy(NSApplicationActivationPolicy::Regular);
+    dock::start(mtm);
     let delegate = AppDelegate::new(mtm);
     app.setDelegate(Some(ProtocolObject::from_ref(&*delegate)));
     build_menu(mtm, &app);

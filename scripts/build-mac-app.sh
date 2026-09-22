@@ -1,6 +1,8 @@
 #!/bin/bash
 # Build Trinidad Head for macOS and install it as ~/Applications/Trinidad Head.app.
 # Each launch opens its own window:  open -n -a "Trinidad Head" --args <command>
+# LSUIElement: every window starts without a Dock tile; one of them then takes the single icon
+# (crates/app/src/mac/dock.rs).
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # TH_HARDENED=1 signs with the hardened runtime and a timestamp, which notarization requires.
@@ -54,6 +56,7 @@ cat > "$STAGE/Contents/Info.plist" <<PLIST
   <key>CFBundleVersion</key><string>${VERSION}</string>
   <key>LSMinimumSystemVersion</key><string>14.0</string>
   <key>NSHighResolutionCapable</key><true/>
+  <key>LSUIElement</key><true/>
   <key>NSSupportsAutomaticGraphicsSwitching</key><true/>
   <key>NSMicrophoneUsageDescription</key><string>Programs run in Trinidad Head (like voice dictation) use the microphone.</string>
   <key>NSSpeechRecognitionUsageDescription</key><string>Programs run in Trinidad Head (like voice dictation) transcribe speech.</string>
