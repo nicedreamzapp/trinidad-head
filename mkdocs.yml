@@ -1,0 +1,72 @@
+site_name: Trinidad Head
+site_description: >-
+  Trinidad Head is a terminal app for Windows and macOS, written from scratch in Rust, with glass
+  windows, a different glow color for every window, and features built for Claude Code sessions.
+site_author: Matt Macosko
+# TODO-VERIFY: placeholder until GitHub Pages is switched on for this repo.
+site_url: https://nicedreamzapp.github.io/trinidad-head/
+repo_url: https://github.com/nicedreamzapp/trinidad-head
+repo_name: nicedreamzapp/trinidad-head
+edit_uri: edit/main/docs/
+copyright: Copyright &copy; 2026 Matt Macosko. Licensed under MIT or Apache-2.0.
+
+# PLAN.md and RESEARCH.md are internal notes that predate this site; keep them out of it.
+exclude_docs: |
+  PLAN.md
+  RESEARCH.md
+
+theme:
+  name: material
+  logo: images/icon.png
+  favicon: images/icon.png
+  palette:
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: deep purple
+      accent: cyan
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: deep purple
+      accent: cyan
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+  features:
+    - navigation.sections
+    - navigation.top
+    - navigation.footer
+    - content.code.copy
+    - search.suggest
+    - search.highlight
+
+plugins:
+  - search
+  - social
+  # The sitemap is built in: MkDocs writes sitemap.xml (and sitemap.xml.gz) from site_url on every build.
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.keys
+
+nav:
+  - Home: index.md
+  - Install: install.md
+  - Quickstart: quickstart.md
+  - Configuration: configuration.md
+  - How it works: how-it-works.md
+  - Troubleshooting: troubleshooting.md
+  - FAQ: faq.md
+  - Changelog: changelog.md
+  - Credits: credits.md
