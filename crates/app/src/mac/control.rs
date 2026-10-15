@@ -195,3 +195,39 @@ mod tests {
         assert!(bytes_for("launch rockets", false).is_err());
     }
 }
+
+#[cfg(test)]
+mod more_tests {
+    use super::bytes_for;
+
+    #[test]
+    fn typed_line_breaks_become_returns() {
+        assert_eq!(bytes_for("type a\r\nb\nc", false).unwrap(), b"a\rb\rc");
+    }
+
+    #[test]
+    fn typed_text_keeps_spaces_and_unicode() {
+        assert_eq!(bytes_for("type  two  spaces", false).unwrap(), b" two  spaces");
+        assert_eq!(bytes_for("type héllo 🌊", false).unwrap(), "héllo 🌊".as_bytes());
+        assert_eq!(bytes_for("type", false).unwrap(), b"");
+        assert_eq!(bytes_for("type", true).unwrap(), b"\x1b[200~\x1b[201~");
+    }
+
+    #[test]
+    fn every_key_name() {
+        assert_eq!(bytes_for("key return", false).unwrap(), b"\r");
+        assert_eq!(bytes_for("key esc", false).unwrap(), b"\x1b");
+        assert_eq!(bytes_for("key tab", false).unwrap(), b"\t");
+        assert_eq!(bytes_for("key ctrl-c", false).unwrap(), b"\x03");
+        assert_eq!(bytes_for("key  enter ", false).unwrap(), b"\r", "spaces around the name are ignored");
+        assert_eq!(bytes_for("key enter", true).unwrap(), b"\r", "keys are never bracketed");
+    }
+
+    #[test]
+    fn unknown_keys_and_commands_say_what_was_wrong() {
+        assert_eq!(bytes_for("key f13", false).unwrap_err(), "unknown key f13");
+        assert_eq!(bytes_for("rm -rf", false).unwrap_err(), "unknown command rm");
+        assert_eq!(bytes_for("", false).unwrap_err(), "unknown command ");
+        assert!(bytes_for("TYPE hi", false).is_err(), "verbs are lower case");
+    }
+}
