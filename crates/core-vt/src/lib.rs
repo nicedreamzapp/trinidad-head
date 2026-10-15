@@ -309,6 +309,12 @@ impl Terminal {
         self.scroll_top = 0;
         self.scroll_bot = rows - 1;
         self.tabs = default_tabs(cols);
+        // The next paint starts a new comparison. Measured against the old, differently sized
+        // screen, rows the shrink just moved into history would read as the screen having
+        // travelled, and be banked a second time.
+        self.last_screen.clear();
+        self.last_cells.clear();
+        self.scrolled = 0;
         self.generation += 1;
     }
 

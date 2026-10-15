@@ -375,7 +375,6 @@ fn resize_resets_the_scroll_region() {
 }
 
 #[test]
-#[ignore = "known bug, fixed in a later commit on this branch"]
 fn shrinking_the_window_does_not_record_the_same_rows_twice() {
     // Rows a shrink pushes into scrollback are in the document already. The next paint must
     // not compare the old, taller screen with the new one, read that as the screen having
