@@ -288,10 +288,11 @@ impl Terminal {
             line.resize(cols, Cell::default());
         }
         // Shrinking: push lines above the cursor into history first, so the prompt stays visible.
+        // On the alternate screen they are the program's rows, not the shell's scrollback.
         while self.grid.len() > rows {
             if self.row > 0 {
                 let line = self.grid.remove(0);
-                self.push_scrollback(line);
+                self.push_history(line);
                 self.row -= 1;
             } else {
                 self.grid.pop();

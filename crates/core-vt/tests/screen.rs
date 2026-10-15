@@ -430,7 +430,6 @@ fn the_alternate_screen_adds_nothing_to_scrollback_when_it_scrolls() {
 }
 
 #[test]
-#[ignore = "known bug, fixed in a later commit on this branch"]
 fn resizing_inside_the_alternate_screen_keeps_its_rows_out_of_the_main_scrollback() {
     // A full-screen program's rows belong to it. Shrinking the window while it runs must not
     // drop them into the shell's own scrollback, where they would sit after it exits.
