@@ -73,7 +73,6 @@ fn a_truncated_extended_color_changes_nothing() {
 }
 
 #[test]
-#[ignore = "known bug, fixed in a later commit on this branch"]
 fn true_color_in_colon_form() {
     // ITU T.416 form: 38:2:<colour space>:r:g:b. The colour-space slot is usually empty.
     let t = term(10, 1, b"\x1b[38:2::255:0:0mA\x1b[48:2:0:10:20:30mB\x1b[38:5:99mC");
@@ -92,7 +91,6 @@ fn true_color_in_colon_form_without_a_colour_space_slot() {
 }
 
 #[test]
-#[ignore = "known bug, fixed in a later commit on this branch"]
 fn colon_sub_parameters_are_not_read_as_attributes() {
     // 4:3 is a curly underline (kitty, neovim's undercurl). The 3 belongs to the 4: it is not
     // SGR 3, italic. Likewise 4:0 turns underline off.
