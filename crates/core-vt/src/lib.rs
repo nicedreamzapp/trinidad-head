@@ -901,6 +901,7 @@ impl Terminal {
         }
         if width == 2 && self.col == self.cols - 1 {
             if self.autowrap {
+                self.split_wide(self.row, self.col);
                 self.grid[self.row][self.col] = Cell { attrs: self.pen, ..Cell::default() };
                 self.col = 0;
                 self.linefeed();
@@ -909,6 +910,10 @@ impl Terminal {
             }
         }
         let (row, col) = (self.row, self.col);
+        self.split_wide(row, col);
+        if width == 2 && col + 1 < self.cols {
+            self.split_wide(row, col + 1);
+        }
         self.grid[row][col] = Cell { ch, attrs: self.pen, wide: width == 2, spacer: false };
         if width == 2 && col + 1 < self.cols {
             self.grid[row][col + 1] = Cell { ch: ' ', attrs: self.pen, wide: false, spacer: true };
@@ -920,6 +925,21 @@ impl Terminal {
         } else {
             self.col = next;
         }
+    }
+
+    /// About to write over one half of a wide character: blank the other half, so no cell is
+    /// left claiming a partner it no longer has.
+    fn split_wide(&mut self, row: usize, col: usize) {
+        let line = &mut self.grid[row];
+        let cell = line[col];
+        let other = if cell.spacer && col > 0 {
+            col - 1
+        } else if cell.wide && col + 1 < line.len() {
+            col + 1
+        } else {
+            return;
+        };
+        line[other] = Cell { attrs: line[other].attrs, ..Cell::default() };
     }
 
     fn move_to(&mut self, row: usize, col: usize) {

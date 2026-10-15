@@ -256,7 +256,6 @@ fn combining_marks_take_no_cell() {
 }
 
 #[test]
-#[ignore = "known bug, fixed in a later commit on this branch"]
 fn overwriting_the_right_half_of_a_wide_character_clears_the_left_half() {
     // "中" is in columns 0-1. Writing over column 1 leaves no half character behind: the
     // wide cell must not stay wide over a neighbour it no longer owns.
@@ -270,7 +269,6 @@ fn overwriting_the_right_half_of_a_wide_character_clears_the_left_half() {
 }
 
 #[test]
-#[ignore = "known bug, fixed in a later commit on this branch"]
 fn overwriting_the_left_half_of_a_wide_character_clears_the_right_half() {
     // Write one narrow character over "中": the spacer it leaves behind is a blank now, and
     // must read as one, not vanish from the text.
