@@ -14,6 +14,7 @@
 [![macOS](https://img.shields.io/badge/macOS-Apple_Silicon_|_Intel-111111?style=for-the-badge&logo=apple&logoColor=white)](#-get-it)
 [![Rust](https://img.shields.io/badge/written_in-Rust-b7410e?style=for-the-badge&logo=rust&logoColor=white)](https://www.rust-lang.org/)
 [![From scratch](https://img.shields.io/badge/built-from_scratch-a855f7?style=for-the-badge)](#-whats-inside)
+[![CI](https://img.shields.io/github/actions/workflow/status/nicedreamzapp/trinidad-head/ci.yml?branch=main&style=for-the-badge&logo=githubactions&logoColor=white&label=CI)](https://github.com/nicedreamzapp/trinidad-head/actions/workflows/ci.yml)
 
 </div>
 
@@ -163,6 +164,17 @@ target\release\trinidad-head.exe
 ```
 
 It starts PowerShell 7 if installed, otherwise Windows PowerShell.
+
+**Tests**
+
+```bash
+cargo test --workspace
+```
+
+The suite needs no window or GPU, so [CI](.github/workflows/ci.yml) runs it on Linux, Mac and
+Windows for every push and pull request. The tests that
+drive the real app window are separate: [scripts/mac-selftest.sh](scripts/mac-selftest.sh) and
+[pc-tools/th_selftest.ps1](pc-tools/th_selftest.ps1).
 
 ### 🚧 Not there yet
 

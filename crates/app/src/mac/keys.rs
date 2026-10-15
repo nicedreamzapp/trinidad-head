@@ -135,3 +135,78 @@ mod tests {
         assert!(control("ab", Mods::default()).is_none());
     }
 }
+
+#[cfg(test)]
+mod more_tests {
+    use super::*;
+
+    const NONE: Mods = Mods { shift: false, alt: false, ctrl: false };
+
+    #[test]
+    fn modifier_codes_follow_xterm() {
+        // 1 + shift + 2*alt + 4*ctrl.
+        let up = '\u{F700}';
+        assert_eq!(special(up, Mods { alt: true, ..NONE }, false).unwrap(), b"\x1b[1;3A");
+        assert_eq!(special(up, Mods { ctrl: true, ..NONE }, false).unwrap(), b"\x1b[1;5A");
+        assert_eq!(special(up, Mods { shift: true, alt: true, ctrl: true }, false).unwrap(), b"\x1b[1;8A");
+        // A modifier wins over application cursor mode.
+        assert_eq!(special(up, Mods { ctrl: true, ..NONE }, true).unwrap(), b"\x1b[1;5A");
+    }
+
+    #[test]
+    fn every_arrow_and_home_end() {
+        for (ch, fin) in [('\u{F700}', 'A'), ('\u{F701}', 'B'), ('\u{F703}', 'C'), ('\u{F702}', 'D'), ('\u{F729}', 'H'), ('\u{F72B}', 'F')] {
+            assert_eq!(special(ch, NONE, false).unwrap(), format!("\x1b[{fin}").into_bytes());
+            assert_eq!(special(ch, NONE, true).unwrap(), format!("\x1bO{fin}").into_bytes());
+        }
+    }
+
+    #[test]
+    fn function_keys() {
+        assert_eq!(special('\u{F704}', NONE, false).unwrap(), b"\x1bOP", "F1");
+        assert_eq!(special('\u{F707}', NONE, false).unwrap(), b"\x1bOS", "F4");
+        assert_eq!(special('\u{F704}', Mods { shift: true, ..NONE }, false).unwrap(), b"\x1b[1;2P");
+        assert_eq!(special('\u{F708}', NONE, false).unwrap(), b"\x1b[15~", "F5");
+        assert_eq!(special('\u{F70F}', NONE, false).unwrap(), b"\x1b[24~", "F12");
+        assert_eq!(special('\u{F70F}', Mods { ctrl: true, ..NONE }, false).unwrap(), b"\x1b[24;5~");
+    }
+
+    #[test]
+    fn insert_delete_page_keys() {
+        assert_eq!(special('\u{F727}', NONE, false).unwrap(), b"\x1b[2~");
+        assert_eq!(special('\u{F72C}', NONE, false).unwrap(), b"\x1b[5~");
+        assert_eq!(special('\u{F72D}', NONE, false).unwrap(), b"\x1b[6~");
+        assert_eq!(special('\u{F728}', Mods { shift: true, ..NONE }, false).unwrap(), b"\x1b[3;2~");
+    }
+
+    #[test]
+    fn backtab_is_the_same_from_either_path() {
+        assert_eq!(special('\u{19}', NONE, false), control("\u{19}", NONE));
+    }
+
+    #[test]
+    fn control_letters_and_specials() {
+        let ctrl = Mods { ctrl: true, ..NONE };
+        assert_eq!(control("a", ctrl).unwrap(), [0x01]);
+        assert_eq!(control("Z", ctrl).unwrap(), [0x1A]);
+        assert_eq!(control(" ", ctrl).unwrap(), [0x00]);
+        assert_eq!(control("@", ctrl).unwrap(), [0x00]);
+        assert_eq!(control("2", ctrl).unwrap(), [0x00]);
+        assert!(control("é", ctrl).is_none());
+        assert!(control("", NONE).is_none());
+    }
+
+    #[test]
+    fn ctrl_delete_is_backspace_and_alt_prefixes_escape() {
+        assert_eq!(control("\u{7f}", Mods { ctrl: true, ..NONE }).unwrap(), [0x08]);
+        assert_eq!(control("\u{7f}", Mods { alt: true, ..NONE }).unwrap(), [0x1b, 0x7f]);
+        assert_eq!(control("b", Mods { ctrl: true, alt: true, ..NONE }).unwrap(), [0x1b, 0x02]);
+        assert_eq!(control("\t", NONE).unwrap(), b"\t");
+    }
+
+    #[test]
+    fn control_codes_appkit_already_made_pass_through() {
+        assert_eq!(control("\u{1}", NONE).unwrap(), [0x01]);
+        assert_eq!(control("\u{1f}", NONE).unwrap(), [0x1f]);
+    }
+}

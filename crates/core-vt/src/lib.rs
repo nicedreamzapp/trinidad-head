@@ -118,6 +118,11 @@ pub struct Terminal {
 
     state: State,
     params: Vec<u32>,
+    /// One per entry of `params`: true when it came after a ':', so it is a sub-parameter of
+    /// the parameter before it (38:2::r:g:b, 4:3) rather than a parameter of its own.
+    sub: Vec<bool>,
+    /// The separator just read was a ':'.
+    colon: bool,
     cur_param: Option<u32>,
     private: Option<u8>,
     intermediates: Vec<u8>,
@@ -165,6 +170,8 @@ impl Terminal {
             generation: 0,
             state: State::Ground,
             params: Vec::new(),
+            sub: Vec::new(),
+            colon: false,
             cur_param: None,
             private: None,
             intermediates: Vec::new(),
@@ -248,7 +255,7 @@ impl Terminal {
             let to = if i == end.0 { (end.1 + 1).min(line.len()) } else { line.len() };
             let piece: String = line[from.min(to)..to].iter().filter(|c| !c.spacer).map(|c| c.ch).collect();
             out.push_str(piece.trim_end());
-            if i != end.0 {
+            if i != end.0.min(last) {
                 out.push('\n');
             }
         }
@@ -281,10 +288,11 @@ impl Terminal {
             line.resize(cols, Cell::default());
         }
         // Shrinking: push lines above the cursor into history first, so the prompt stays visible.
+        // On the alternate screen they are the program's rows, not the shell's scrollback.
         while self.grid.len() > rows {
             if self.row > 0 {
                 let line = self.grid.remove(0);
-                self.push_scrollback(line);
+                self.push_history(line);
                 self.row -= 1;
             } else {
                 self.grid.pop();
@@ -301,6 +309,12 @@ impl Terminal {
         self.scroll_top = 0;
         self.scroll_bot = rows - 1;
         self.tabs = default_tabs(cols);
+        // The next paint starts a new comparison. Measured against the old, differently sized
+        // screen, rows the shrink just moved into history would read as the screen having
+        // travelled, and be banked a second time.
+        self.last_screen.clear();
+        self.last_cells.clear();
+        self.scrolled = 0;
         self.generation += 1;
     }
 
@@ -541,6 +555,8 @@ impl Terminal {
             '[' => {
                 self.state = State::Csi;
                 self.params.clear();
+                self.sub.clear();
+                self.colon = false;
                 self.cur_param = None;
                 self.private = None;
                 self.intermediates.clear();
@@ -594,9 +610,12 @@ impl Terminal {
                 let d = c - 0x30;
                 self.cur_param = Some(self.cur_param.unwrap_or(0).saturating_mul(10).saturating_add(d).min(65535));
             }
-            // ';' and ':' both separate; colon sub-parameters are flattened.
+            // ';' and ':' both separate. A ':' marks what follows as a sub-parameter, which only
+            // SGR reads; everything else sees one flat list.
             0x3A | 0x3B => {
                 self.params.push(self.cur_param.take().unwrap_or(0));
+                self.sub.push(self.colon);
+                self.colon = c == 0x3A;
             }
             0x3C..=0x3F => {
                 if self.params.is_empty() && self.cur_param.is_none() {
@@ -607,6 +626,7 @@ impl Terminal {
             0x40..=0x7E => {
                 if let Some(p) = self.cur_param.take() {
                     self.params.push(p);
+                    self.sub.push(self.colon);
                 }
                 self.state = State::Ground;
                 self.csi_dispatch(ch);
@@ -765,6 +785,26 @@ impl Terminal {
         let mut i = 0;
         while i < self.params.len() {
             let v = self.params[i];
+            // The sub-parameters that follow this one, colon form (38:2::r:g:b, 4:3).
+            let subs = self.params[i + 1..].iter().zip(&self.sub[i + 1..]).take_while(|(_, &s)| s).count();
+            if subs > 0 {
+                let group = &self.params[i + 1..i + 1 + subs];
+                match v {
+                    4 => self.pen.underline = group[0] != 0,
+                    38 | 48 => {
+                        if let Some(color) = colon_color(group) {
+                            if v == 38 {
+                                self.pen.fg = color;
+                            } else {
+                                self.pen.bg = color;
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+                i += 1 + subs;
+                continue;
+            }
             match v {
                 0 => self.pen = Attrs::default(),
                 1 => self.pen.bold = true,
@@ -868,6 +908,7 @@ impl Terminal {
         }
         if width == 2 && self.col == self.cols - 1 {
             if self.autowrap {
+                self.split_wide(self.row, self.col);
                 self.grid[self.row][self.col] = Cell { attrs: self.pen, ..Cell::default() };
                 self.col = 0;
                 self.linefeed();
@@ -876,6 +917,10 @@ impl Terminal {
             }
         }
         let (row, col) = (self.row, self.col);
+        self.split_wide(row, col);
+        if width == 2 && col + 1 < self.cols {
+            self.split_wide(row, col + 1);
+        }
         self.grid[row][col] = Cell { ch, attrs: self.pen, wide: width == 2, spacer: false };
         if width == 2 && col + 1 < self.cols {
             self.grid[row][col + 1] = Cell { ch: ' ', attrs: self.pen, wide: false, spacer: true };
@@ -887,6 +932,21 @@ impl Terminal {
         } else {
             self.col = next;
         }
+    }
+
+    /// About to write over one half of a wide character: blank the other half, so no cell is
+    /// left claiming a partner it no longer has.
+    fn split_wide(&mut self, row: usize, col: usize) {
+        let line = &mut self.grid[row];
+        let cell = line[col];
+        let other = if cell.spacer && col > 0 {
+            col - 1
+        } else if cell.wide && col + 1 < line.len() {
+            col + 1
+        } else {
+            return;
+        };
+        line[other] = Cell { attrs: line[other].attrs, ..Cell::default() };
     }
 
     fn move_to(&mut self, row: usize, col: usize) {
@@ -1063,6 +1123,18 @@ impl Terminal {
         let s = self.saved;
         self.move_to(s.row, s.col);
         self.pen = s.pen;
+    }
+}
+
+/// A color in colon form, from the sub-parameters after 38 or 48: `5:n`, `2:r:g:b`, or
+/// `2:<colour space>:r:g:b` as ITU T.416 writes it.
+fn colon_color(group: &[u32]) -> Option<Color> {
+    let c = |x: u32| x.min(255) as u8;
+    match group {
+        [5, n, ..] => Some(Color::Indexed(c(*n))),
+        [2, _, r, g, b, ..] => Some(Color::Rgb(c(*r), c(*g), c(*b))),
+        [2, r, g, b] => Some(Color::Rgb(c(*r), c(*g), c(*b))),
+        _ => None,
     }
 }
 
