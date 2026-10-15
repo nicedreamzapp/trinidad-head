@@ -145,3 +145,112 @@ mod tests {
         assert!(s.contains("30 90"), "{s}");
     }
 }
+
+#[cfg(test)]
+mod more_tests {
+    use super::Pty;
+    use std::io::Read;
+    use std::time::{Duration, Instant};
+
+    /// Read the shell's output until `want` shows up, the stream ends, or 10 seconds pass.
+    fn read_until(out: &mut std::fs::File, want: &str) -> String {
+        let mut buf = Vec::new();
+        let mut chunk = [0u8; 1024];
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while Instant::now() < deadline {
+            match out.read(&mut chunk) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => buf.extend_from_slice(&chunk[..n]),
+            }
+            if String::from_utf8_lossy(&buf).contains(want) {
+                break;
+            }
+        }
+        String::from_utf8_lossy(&buf).into_owned()
+    }
+
+    #[test]
+    fn what_is_written_reaches_the_program() {
+        let mut pty = Pty::spawn("cat", None, 80, 24).unwrap();
+        let mut out = pty.take_output().unwrap();
+        pty.write(b"ping from the test\n").unwrap();
+        let s = read_until(&mut out, "ping from the test");
+        assert!(s.contains("ping from the test"), "{s}");
+    }
+
+    #[test]
+    fn the_output_stream_is_handed_out_once() {
+        let mut pty = Pty::spawn("true", None, 80, 24).unwrap();
+        assert!(pty.take_output().is_some());
+        assert!(pty.take_output().is_none());
+    }
+
+    #[test]
+    fn resizing_reaches_the_program() {
+        let mut pty = Pty::spawn("sleep 0.5; stty size", None, 80, 24).unwrap();
+        let mut out = pty.take_output().unwrap();
+        pty.resize(132, 43).unwrap();
+        let s = read_until(&mut out, "43 132");
+        assert!(s.contains("43 132"), "{s}");
+    }
+
+    #[test]
+    fn a_zero_size_is_treated_as_one_by_one() {
+        let mut pty = Pty::spawn("stty size", None, 0, 0).unwrap();
+        let mut out = pty.take_output().unwrap();
+        let s = read_until(&mut out, "1 1");
+        assert!(s.contains("1 1"), "{s}");
+    }
+
+    #[test]
+    fn reports_the_exit_code() {
+        let mut pty = Pty::spawn("exit 3", None, 80, 24).unwrap();
+        let _out = pty.take_output();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut code = None;
+        while Instant::now() < deadline && code.is_none() {
+            code = pty.exit_code();
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(code, Some(3));
+    }
+
+    #[test]
+    fn the_program_sees_a_color_terminal() {
+        let mut pty = Pty::spawn("echo \"[$TERM $COLORTERM $TERM_PROGRAM]\"", None, 80, 24).unwrap();
+        let mut out = pty.take_output().unwrap();
+        let s = read_until(&mut out, "TrinidadHead]");
+        assert!(s.contains("[xterm-256color truecolor TrinidadHead]"), "{s}");
+    }
+
+    #[test]
+    fn claude_code_session_variables_do_not_leak_into_the_shell() {
+        // A claude started in a new window must not think it is a child session.
+        std::env::set_var("CLAUDE_TH_LEAK_TEST", "leaked");
+        let mut pty = Pty::spawn("echo \"[${CLAUDE_TH_LEAK_TEST-gone}]\"", None, 80, 24).unwrap();
+        let mut out = pty.take_output().unwrap();
+        let s = read_until(&mut out, "[gone]");
+        std::env::remove_var("CLAUDE_TH_LEAK_TEST");
+        assert!(s.contains("[gone]") && !s.contains("leaked"), "{s}");
+    }
+
+    #[test]
+    fn starts_in_the_folder_asked_for() {
+        let dir = std::env::temp_dir().canonicalize().unwrap();
+        let mut pty = Pty::spawn("pwd -P", Some(dir.to_str().unwrap()), 200, 24).unwrap();
+        let mut out = pty.take_output().unwrap();
+        let want = dir.to_string_lossy().into_owned();
+        let s = read_until(&mut out, &want);
+        assert!(s.contains(&want), "{s}");
+    }
+
+    #[test]
+    fn dropping_it_ends_the_shell() {
+        let pty = Pty::spawn("sleep 30", None, 80, 24).unwrap();
+        let pid = pty.pid() as libc::pid_t;
+        assert!(pid > 0);
+        drop(pty);
+        // Killed and reaped: the pid no longer names a process of ours.
+        assert_ne!(unsafe { libc::kill(pid, 0) }, 0);
+    }
+}
