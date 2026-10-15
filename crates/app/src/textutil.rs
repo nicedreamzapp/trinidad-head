@@ -414,3 +414,156 @@ mod frozen_tests {
         assert_eq!(f.text((15, 0), (16, 3)), "line 15\nline", "the last row stops where the drag stopped");
     }
 }
+
+#[cfg(test)]
+mod more_tests {
+    use super::*;
+    use core_vt::Cell;
+
+    fn chars(s: &str) -> Vec<char> {
+        s.chars().collect()
+    }
+    fn cells(s: &str) -> Vec<Cell> {
+        s.chars().map(|ch| Cell { ch, ..Cell::default() }).collect()
+    }
+
+    #[test]
+    fn a_link_ends_at_the_first_character_a_url_cannot_hold() {
+        let line = chars("go to <https://x.io/a?b=1&c=%20> now");
+        assert_eq!(url_at(&line, 10).as_deref(), Some("https://x.io/a?b=1&c=%20"));
+        let line = chars("\"https://x.io/q\" said");
+        assert_eq!(url_at(&line, 3).as_deref(), Some("https://x.io/q"));
+    }
+
+    #[test]
+    fn trailing_punctuation_is_trimmed_repeatedly() {
+        assert_eq!(url_at(&chars("https://x.io/a.),;"), 0).as_deref(), Some("https://x.io/a"));
+        assert_eq!(url_at(&chars("(see https://x.io/wiki/A_(b)).") , 10).as_deref(), Some("https://x.io/wiki/A_(b)"));
+    }
+
+    #[test]
+    fn several_links_on_one_line() {
+        let line = chars("https://a.io http://b.io https://c.io");
+        assert_eq!(url_at(&line, 0).as_deref(), Some("https://a.io"));
+        assert_eq!(url_at(&line, 15).as_deref(), Some("http://b.io"));
+        assert_eq!(url_at(&line, 30).as_deref(), Some("https://c.io"));
+        assert_eq!(url_at(&line, 12), None, "the space between them");
+    }
+
+    #[test]
+    fn links_after_wide_or_accented_text_line_up_with_their_columns() {
+        // Columns count characters, not bytes.
+        let line = chars("é中 https://x.io");
+        assert_eq!(url_at(&line, 3).as_deref(), Some("https://x.io"));
+        assert_eq!(url_at(&line, 2), None);
+    }
+
+    #[test]
+    fn other_schemes_and_bare_domains_are_not_links() {
+        assert_eq!(url_at(&chars("ftp://x.io file:///tmp www.x.io"), 2), None);
+        assert_eq!(url_at(&chars("https://"), 0), None);
+        assert_eq!(url_at(&[], 0), None);
+    }
+
+    #[test]
+    fn a_column_past_the_end_finds_nothing() {
+        assert_eq!(url_at(&chars("https://x.io"), 50), None);
+    }
+
+    #[test]
+    fn wrap_breaks_words_longer_than_a_line() {
+        assert_eq!(wrap("abc defghijklmno", 5, 5), vec!["abc", "defgh", "ijklm", "no"]);
+    }
+
+    #[test]
+    fn wrap_with_zero_widths_still_makes_progress() {
+        assert_eq!(wrap("abc", 0, 0), vec!["a", "b", "c"]);
+    }
+
+    #[test]
+    fn wrap_counts_characters_not_bytes() {
+        assert_eq!(wrap("ééé ééé", 3, 3), vec!["ééé", "ééé"]);
+    }
+
+    #[test]
+    fn wrap_a_narrower_first_line() {
+        // The first line leaves room for a prompt; the rest use the full width.
+        assert_eq!(wrap("one two three four", 4, 10), vec!["one", "two three", "four"]);
+    }
+
+    #[test]
+    fn cells_text_of_nothing_is_empty() {
+        assert_eq!(cells_text(&[], (0, 0), (5, 5)), "");
+    }
+
+    #[test]
+    fn cells_text_clamps_points_past_the_end() {
+        let rows = vec![cells("abc  "), cells("de")];
+        assert_eq!(cells_text(&rows, (0, 1), (9, 99)), "bc\nde");
+        assert_eq!(cells_text(&rows, (0, 10), (0, 20)), "");
+    }
+
+    #[test]
+    fn cells_text_skips_spacers() {
+        let mut row = cells("中 x");
+        row[0].wide = true;
+        row[1].spacer = true;
+        assert_eq!(cells_text(&[row], (0, 0), (0, 2)), "中x");
+    }
+
+    #[test]
+    fn frozen_with_fewer_rows_than_the_screen_cannot_scroll() {
+        let mut f = Frozen::new(vec![cells("a"), cells("b")], 5);
+        assert_eq!(f.offset, 0);
+        assert!(!f.scroll(1, 5));
+        assert!(!f.scroll(-1, 5));
+        assert_eq!(f.row_at(4), 1, "rows past the end clamp to the last");
+        let empty = Frozen::new(Vec::new(), 5);
+        assert_eq!(empty.row_at(3), 0);
+        assert_eq!(empty.text((0, 0), (3, 3)), "");
+    }
+
+    #[test]
+    fn harvest_down_then_stuck_then_moving_again_resets_the_count() {
+        let screen = |from: usize| -> Vec<String> { (from..from + 5).map(|i| format!("line {i}")).collect() };
+        let mut h = Harvest::new(false, screen(0), Vec::new());
+        assert!(h.absorb(screen(0)));
+        assert_eq!(h.stuck, 1);
+        assert!(h.absorb(screen(2)));
+        assert_eq!(h.stuck, 0);
+        assert_eq!(h.lines, ["line 5", "line 6"]);
+        assert_eq!(h.text(), "line 5\nline 6");
+    }
+
+    #[test]
+    fn collect_stops_at_its_row_cap() {
+        let block = |from: usize, n: usize| -> (Vec<String>, Vec<Vec<Cell>>) {
+            let text: Vec<String> = (from..from + n).map(|i| format!("line {i}")).collect();
+            let grid = text.iter().map(|l| cells(l)).collect();
+            (text, grid)
+        };
+        let n = 50;
+        let mut top = 100_000;
+        let (t, c) = block(top, n);
+        let mut col = Collect::new(t, c);
+        let mut steps = 0;
+        loop {
+            top -= n - 2;
+            let (t, c) = block(top, n);
+            steps += 1;
+            if !col.absorb(t, c) {
+                break;
+            }
+            assert!(steps < 1000, "never stopped");
+        }
+        assert!(col.rows.len() >= 5000);
+        assert!(col.rows.len() < 5000 + n, "stops as soon as it passes the cap");
+        // Oldest first, no gaps or repeats.
+        let text: Vec<String> = col.rows.iter().map(|r| r.iter().map(|c| c.ch).collect()).collect();
+        for w in text.windows(2) {
+            let a: usize = w[0][5..].parse().unwrap();
+            let b: usize = w[1][5..].parse().unwrap();
+            assert_eq!(b, a + 1);
+        }
+    }
+}

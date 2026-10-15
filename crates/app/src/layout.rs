@@ -327,3 +327,119 @@ mod tests {
         assert!(l.text.l > l.sidebar.r && l.text.t > l.lights_pill.b);
     }
 }
+
+#[cfg(test)]
+mod more_tests {
+    use super::*;
+
+    #[test]
+    fn rect_basics() {
+        let r = Rect::new(10.0, 20.0, 100.0, 50.0);
+        assert_eq!((r.w(), r.h(), r.cx(), r.cy()), (100.0, 50.0, 60.0, 45.0));
+        assert!(r.contains(10.0, 20.0), "the left and top edges are inside");
+        assert!(!r.contains(110.0, 45.0) && !r.contains(60.0, 70.0), "the right and bottom edges are not");
+    }
+
+    #[test]
+    fn everything_scales_with_the_display() {
+        let a = Layout::new(1000.0, 640.0, 1.0, false);
+        let b = Layout::new(2000.0, 1280.0, 2.0, false);
+        assert_eq!(b.body.l, a.body.l * 2.0);
+        assert_eq!(b.radius, a.radius * 2.0);
+        assert_eq!(b.text.l, a.text.l * 2.0);
+        assert_eq!(b.text.t, a.text.t * 2.0);
+        let (ax, ay, ar) = a.button(Button::Close);
+        let (bx, by, br) = b.button(Button::Close);
+        assert_eq!((bx, by, br), (ax * 2.0, ay * 2.0, ar * 2.0));
+        assert_eq!(b.hit(bx, by), Hit::Client);
+    }
+
+    #[test]
+    fn the_text_area_sits_inside_the_body() {
+        for (w, h, s) in [(1000.0, 640.0, 1.0), (640.0, 400.0, 1.0), (2560.0, 1600.0, 2.0), (800.0, 500.0, 1.5)] {
+            for maximized in [false, true] {
+                let l = Layout::new(w, h, s, maximized);
+                assert!(l.text.l >= l.body.l && l.text.r <= l.body.r, "{w}x{h}@{s}");
+                assert!(l.text.t >= l.body.t && l.text.b <= l.body.b, "{w}x{h}@{s}");
+                assert!(l.text.w() > 0.0 && l.text.h() > 0.0, "{w}x{h}@{s}");
+                assert!(l.radius <= l.body.w() / 2.0 && l.radius <= l.body.h() / 2.0);
+            }
+        }
+    }
+
+    #[test]
+    fn a_tiny_window_still_has_a_body() {
+        let l = Layout::new(10.0, 10.0, 1.0, false);
+        assert!(l.body.w() >= 1.0 && l.body.h() >= 1.0);
+        assert!(l.radius >= 0.0);
+        let _ = l.hit(5.0, 5.0);
+        let _ = outline(&l, 0.0, 0.0, 16);
+    }
+
+    #[test]
+    fn buttons_not_on_the_sidebar_cannot_be_hit() {
+        let l = Layout::new(1000.0, 640.0, 1.0, false);
+        for b in [Button::Terminal, Button::Folder] {
+            let (x, y, r) = l.button(b);
+            assert_eq!(r, 0.0);
+            assert_ne!(l.button_at(x, y), Some(b));
+        }
+    }
+
+    #[test]
+    fn every_visible_button_is_hit_at_its_centre_and_missed_far_away() {
+        let l = Layout::new(1000.0, 640.0, 1.0, false);
+        for b in [Button::Close, Button::Minimize, Button::Zoom, Button::Glow] {
+            let (x, y, _) = l.button(b);
+            assert_eq!(l.button_at(x, y), Some(b), "{b:?}");
+            assert_eq!(l.button_at(x + 40.0, y + 40.0).filter(|&h| h == b), None, "{b:?}");
+        }
+        assert_eq!(l.button_at(500.0, 300.0), None);
+    }
+
+    #[test]
+    fn small_buttons_get_a_finger_sized_target() {
+        let l = Layout::new(1000.0, 640.0, 1.0, false);
+        let (x, y, r) = l.button(Button::Close);
+        assert!(r < 9.0);
+        // Just outside the drawn circle but inside the 9px + 2px target.
+        // Straight down, away from the neighbouring Minimize button.
+        assert_eq!(l.button_at(x, y + 10.5), Some(Button::Close));
+        assert_eq!(l.button_at(x, y + 11.5), None);
+    }
+
+    #[test]
+    fn maximized_windows_have_a_caption_but_no_resize_edges() {
+        let l = Layout::new(1000.0, 640.0, 1.0, true);
+        assert_eq!(l.body, Rect { l: 0.0, t: 0.0, r: 1000.0, b: 640.0 });
+        for (x, y) in [(0.0, 0.0), (999.0, 639.0), (0.0, 320.0), (500.0, 639.0)] {
+            assert!(!matches!(l.hit(x, y), Hit::Left | Hit::Right | Hit::Top | Hit::Bottom | Hit::TopLeft | Hit::TopRight | Hit::BottomLeft | Hit::BottomRight));
+        }
+        assert_eq!(l.hit(500.0, 10.0), Hit::Caption);
+    }
+
+    #[test]
+    fn the_four_corners_resize_diagonally() {
+        let l = Layout::new(1000.0, 640.0, 1.0, false);
+        let b = l.body;
+        assert_eq!(l.hit(b.l + 1.0, b.t + 1.0), Hit::TopLeft);
+        assert_eq!(l.hit(b.r - 1.0, b.t + 1.0), Hit::TopRight);
+        assert_eq!(l.hit(b.l + 1.0, b.b - 1.0), Hit::BottomLeft);
+        assert_eq!(l.hit(b.r - 1.0, b.b - 1.0), Hit::BottomRight);
+    }
+
+    #[test]
+    fn outline_closes_on_itself_and_has_no_gaps() {
+        let l = Layout::new(1000.0, 640.0, 1.0, false);
+        let pts = outline(&l, 4.0, 0.0, 720);
+        let total: f32 = pts.windows(2).map(|w| ((w[1].0 - w[0].0).powi(2) + (w[1].1 - w[0].1).powi(2)).sqrt()).sum();
+        let longest = pts.windows(2).map(|w| ((w[1].0 - w[0].0).powi(2) + (w[1].1 - w[0].1).powi(2)).sqrt()).fold(0.0, f32::max);
+        assert!(longest < total / 720.0 * 1.5, "points are evenly spaced: longest step {longest}");
+        let (first, last) = (pts[0], pts[pts.len() - 1]);
+        assert!(((first.0 - last.0).powi(2) + (first.1 - last.1).powi(2)).sqrt() < longest * 1.5, "the last point leads back to the first");
+        // With no wobble, every point is on or inside the inset body.
+        for (x, y) in pts {
+            assert!(x >= l.body.l + 4.0 - 0.01 && x <= l.body.r - 4.0 + 0.01 && y >= l.body.t + 4.0 - 0.01 && y <= l.body.b - 4.0 + 0.01);
+        }
+    }
+}

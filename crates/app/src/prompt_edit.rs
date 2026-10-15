@@ -357,3 +357,129 @@ mod tests {
         assert_eq!(cut_between(&f, (1, 2), (1, 6)), "this and that");
     }
 }
+
+#[cfg(test)]
+mod more_tests {
+    use super::*;
+
+    fn row(text: &str, cols: usize) -> Vec<Cell> {
+        let mut v: Vec<Cell> = text.chars().map(|ch| Cell { ch, ..Cell::default() }).collect();
+        v.resize(cols, Cell::default());
+        v
+    }
+    fn screen(lines: &[&str]) -> Vec<Vec<Cell>> {
+        lines.iter().map(|l| row(l, 30)).collect()
+    }
+    const RULE: &str = "──────────────────────────────";
+
+    #[test]
+    fn a_backwards_highlight_plans_the_same_cut() {
+        let rows = screen(&[RULE, "❯ alpha bravo", RULE]);
+        assert_eq!(plan(&rows, (1, 13), (1, 12), (1, 8)), plan(&rows, (1, 13), (1, 8), (1, 12)));
+    }
+
+    #[test]
+    fn the_caret_on_a_rule_or_off_screen_is_not_in_a_box() {
+        let rows = screen(&[RULE, "❯ alpha", RULE]);
+        assert_eq!(plan(&rows, (0, 3), (1, 2), (1, 4)), None);
+        assert_eq!(plan(&rows, (9, 0), (1, 2), (1, 4)), None);
+    }
+
+    #[test]
+    fn a_box_needs_a_rule_above_and_below() {
+        assert_eq!(plan(&screen(&["❯ alpha", RULE]), (0, 7), (0, 2), (0, 4)), None);
+        assert_eq!(plan(&screen(&[RULE, "❯ alpha"]), (1, 7), (1, 2), (1, 4)), None);
+    }
+
+    #[test]
+    fn a_rule_with_other_characters_on_it_is_not_a_rule() {
+        let rows = screen(&["── title ──", "❯ alpha", RULE]);
+        assert_eq!(plan(&rows, (1, 7), (1, 2), (1, 4)), None);
+        assert_eq!(plan(&screen(&["", "❯ alpha", RULE]), (1, 7), (1, 2), (1, 4)), None, "a blank row is not a rule");
+    }
+
+    #[test]
+    fn the_first_row_needs_a_mark_then_a_space() {
+        assert_eq!(plan(&screen(&[RULE, "  alpha", RULE]), (1, 7), (1, 2), (1, 4)), None);
+        assert_eq!(plan(&screen(&[RULE, "❯alpha", RULE]), (1, 6), (1, 2), (1, 4)), None);
+    }
+
+    #[test]
+    fn rows_after_the_first_must_be_indented() {
+        let rows = screen(&[RULE, "❯ one", "xtwo", RULE]);
+        assert_eq!(plan(&rows, (1, 5), (1, 2), (1, 4)), None);
+    }
+
+    #[test]
+    fn a_highlight_of_only_the_mark_cuts_nothing() {
+        let rows = screen(&[RULE, "❯ alpha", RULE]);
+        assert_eq!(plan(&rows, (1, 7), (1, 0), (1, 1)), None);
+    }
+
+    #[test]
+    fn a_highlight_of_only_blank_space_past_the_text_cuts_nothing() {
+        let rows = screen(&[RULE, "❯ alpha", RULE]);
+        assert_eq!(plan(&rows, (1, 7), (1, 10), (1, 20)), None);
+    }
+
+    #[test]
+    fn a_suggestion_after_typed_text_is_not_counted_as_text() {
+        let mut rows = screen(&[RULE, "❯ typed suggestion", RULE]);
+        for c in rows[1].iter_mut().skip(7) {
+            c.attrs.dim = true;
+        }
+        let cut = plan(&rows, (1, 7), (1, 2), (1, 25)).unwrap();
+        assert_eq!(cut.start, (1, 2));
+        assert_eq!(painted_chars(&rows, cut.start, (1, 7)), 5);
+    }
+
+    #[test]
+    fn painted_chars_skips_spacers() {
+        let mut rows = screen(&[RULE, "❯ 中 x", RULE]);
+        rows[1][2].wide = true;
+        rows[1][3].spacer = true;
+        assert_eq!(painted_chars(&rows, (1, 2), (1, 5)), 2);
+    }
+
+    #[test]
+    fn painted_chars_of_an_empty_range_is_zero() {
+        let rows = screen(&[RULE, "❯ alpha", RULE]);
+        assert_eq!(painted_chars(&rows, (1, 4), (1, 4)), 0);
+    }
+
+    /// A program that ignores clicks: the caret never moves.
+    struct Deaf {
+        rows: Vec<Vec<Cell>>,
+        caret: (usize, usize),
+        wrote: std::cell::RefCell<Vec<u8>>,
+    }
+
+    impl Screen for Deaf {
+        fn snapshot(&self) -> ((usize, usize), Vec<Vec<Cell>>) {
+            (self.caret, self.rows.clone())
+        }
+        fn write(&self, bytes: &[u8]) {
+            self.wrote.borrow_mut().extend_from_slice(bytes);
+        }
+        fn click(&self, _: (usize, usize)) {}
+    }
+
+    #[test]
+    fn nothing_is_deleted_when_the_program_does_not_move_its_caret_past_the_start() {
+        // The caret sits before the highlight and the click does nothing: deleting from there
+        // would eat the wrong text, so not one Backspace goes out.
+        let rows = screen(&[RULE, "❯ alpha bravo", RULE]);
+        let d = Deaf { rows: rows.clone(), caret: (1, 2), wrote: Default::default() };
+        let cut = plan(&rows, (1, 2), (1, 8), (1, 12)).unwrap();
+        assert!(!run(&d, cut));
+        assert!(d.wrote.borrow().is_empty());
+    }
+
+    #[test]
+    fn nothing_is_deleted_when_the_caret_is_outside_a_box() {
+        let rows = screen(&["$ plain shell", "", ""]);
+        let d = Deaf { rows, caret: (0, 13), wrote: Default::default() };
+        assert!(!run(&d, Cut { start: (0, 2), end: (0, 7) }));
+        assert!(d.wrote.borrow().is_empty());
+    }
+}
