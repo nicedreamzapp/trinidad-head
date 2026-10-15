@@ -255,7 +255,7 @@ impl Terminal {
             let to = if i == end.0 { (end.1 + 1).min(line.len()) } else { line.len() };
             let piece: String = line[from.min(to)..to].iter().filter(|c| !c.spacer).map(|c| c.ch).collect();
             out.push_str(piece.trim_end());
-            if i != end.0 {
+            if i != end.0.min(last) {
                 out.push('\n');
             }
         }

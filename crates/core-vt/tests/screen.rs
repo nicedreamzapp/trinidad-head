@@ -312,7 +312,6 @@ fn line_reads_back_through_history() {
 }
 
 #[test]
-#[ignore = "known bug, fixed in a later commit on this branch"]
 fn text_between_handles_points_out_of_range() {
     let t = term(5, 2, b"abc\r\ndef");
     assert_eq!(t.text_between((0, 0), (99, 99)), "abc\ndef");
