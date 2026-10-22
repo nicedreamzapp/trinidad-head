@@ -24,9 +24,9 @@ Mac and Windows downloads are on the [latest release](#-get-it).
 
 ![A Trinidad Head window: dark glass with a glowing orange rim](docs/images/window.jpg)
 
----
-
-## 🌅 Why it exists
+<a id="why"></a>
+<picture><source media="(max-width: 610px), (min-width: 768px) and (max-width: 895px)" srcset="https://raw.githubusercontent.com/nicedreamzapp/trinidad-head/main/assets/readme/s01-banner-m.svg"><source media="(max-width: 1149px)" srcset="https://raw.githubusercontent.com/nicedreamzapp/trinidad-head/main/assets/readme/s01-banner-mid.svg"><img src="https://raw.githubusercontent.com/nicedreamzapp/trinidad-head/main/assets/readme/s01-banner.svg" width="100%" alt="01. Why it exists. A terminal that looks as good as the work you do in it"></picture>
+<picture><source media="(max-width: 610px), (min-width: 768px) and (max-width: 895px)" srcset="https://raw.githubusercontent.com/nicedreamzapp/trinidad-head/main/assets/readme/s01-r1-m.svg"><source media="(max-width: 1149px)" srcset="https://raw.githubusercontent.com/nicedreamzapp/trinidad-head/main/assets/readme/s01-r1-mid.svg"><img src="https://raw.githubusercontent.com/nicedreamzapp/trinidad-head/main/assets/readme/s01-r1.svg" width="100%" alt="Windows and Mac. Written from scratch in Rust. A color for every window. Picked automatically so no two match. Your prompts stand out. Your own questions sit in a soft bubble."></picture>
 
 Most terminals are a plain black box. When you have three or four open, they all look the same, and
 you lose track of which one is which. When you scroll back through a long chat with an AI helper,
@@ -37,18 +37,20 @@ Trinidad Head fixes both, and makes the window something you actually enjoy look
 > **The name:** Trinidad Head is a headland on the Northern California coast, tied to the mainland
 > by a strip of sand. This terminal is meant to tie things together the same way.
 
----
 
-## 🌈 A color for every window
+### 🌈 A color for every window
 
 Open a few windows and each one glows a different color, picked automatically so no two match.
 Want a different one? Click the paint palette on the side of the window.
 
 ![Three Trinidad Head windows at once, each a different color](docs/images/colors.jpg)
 
----
+<img src="https://raw.githubusercontent.com/nicedreamzapp/trinidad-head/main/assets/readme/s01-rule.svg" width="100%" alt="">
 
-## 🦙 Made for local models
+
+<a id="models"></a>
+<picture><source media="(max-width: 610px), (min-width: 768px) and (max-width: 895px)" srcset="https://raw.githubusercontent.com/nicedreamzapp/trinidad-head/main/assets/readme/s02-banner-m.svg"><source media="(max-width: 1149px)" srcset="https://raw.githubusercontent.com/nicedreamzapp/trinidad-head/main/assets/readme/s02-banner-mid.svg"><img src="https://raw.githubusercontent.com/nicedreamzapp/trinidad-head/main/assets/readme/s02-banner.svg" width="100%" alt="02. Made for local models. And everything else you get"></picture>
+<picture><source media="(max-width: 610px), (min-width: 768px) and (max-width: 895px)" srcset="https://raw.githubusercontent.com/nicedreamzapp/trinidad-head/main/assets/readme/s02-r1-m.svg"><source media="(max-width: 1149px)" srcset="https://raw.githubusercontent.com/nicedreamzapp/trinidad-head/main/assets/readme/s02-r1-mid.svg"><img src="https://raw.githubusercontent.com/nicedreamzapp/trinidad-head/main/assets/readme/s02-r1.svg" width="100%" alt="Tell models apart. Qwen in one color, Gemma in another, Claude in a third. Easy on the eyes. Larger, clear text by default. Copy and paste just work. Even inside full-screen apps."></picture>
 
 If you run AI models on your own computer, this is the terminal for it:
 
@@ -59,9 +61,8 @@ If you run AI models on your own computer, this is the terminal for it:
 It pairs with **[Claude Code Local](https://github.com/nicedreamzapp/claude-code-local)**, which runs
 Claude Code on your own Mac with no cloud at all.
 
----
 
-## ✨ What you get
+### ✨ What you get
 
 - 🪟 **A window that feels designed.** Dark glass, softly rounded corners, a glowing rim, and the
   familiar red, yellow and green buttons. It looks the same on Windows and on a Mac.
@@ -81,9 +82,12 @@ Claude Code on your own Mac with no cloud at all.
 - 🎙️ **Dictation friendly.** Voice typing and other input methods go straight in.
 - ↘️ **Easy to resize.** Grab the little lines in the bottom corner, or any edge.
 
----
+<img src="https://raw.githubusercontent.com/nicedreamzapp/trinidad-head/main/assets/readme/s02-rule.svg" width="100%" alt="">
 
-## 🧱 What's inside
+
+<a id="-whats-inside"></a>
+<picture><source media="(max-width: 610px), (min-width: 768px) and (max-width: 895px)" srcset="https://raw.githubusercontent.com/nicedreamzapp/trinidad-head/main/assets/readme/s03-banner-m.svg"><source media="(max-width: 1149px)" srcset="https://raw.githubusercontent.com/nicedreamzapp/trinidad-head/main/assets/readme/s03-banner-mid.svg"><img src="https://raw.githubusercontent.com/nicedreamzapp/trinidad-head/main/assets/readme/s03-banner.svg" width="100%" alt="03. What&#x27;s inside. Written from scratch, no borrowed engine"></picture>
+<picture><source media="(max-width: 610px), (min-width: 768px) and (max-width: 895px)" srcset="https://raw.githubusercontent.com/nicedreamzapp/trinidad-head/main/assets/readme/s03-r1-m.svg"><source media="(max-width: 1149px)" srcset="https://raw.githubusercontent.com/nicedreamzapp/trinidad-head/main/assets/readme/s03-r1-mid.svg"><img src="https://raw.githubusercontent.com/nicedreamzapp/trinidad-head/main/assets/readme/s03-r1.svg" width="100%" alt="Engine. Understands everything a shell prints. Shell host. PowerShell on Windows, your shell on the Mac. Window. Glass, glow and text using each system&#x27;s own graphics."></picture>
 
 Everything is written from scratch, with no borrowed terminal engine and no web browser hiding
 inside:
@@ -97,9 +101,8 @@ inside:
 The engine has no screen code of its own, so the same brain can later power a phone view, a web
 view or an AI that reads the screen.
 
----
 
-## 🛠️ What I built
+### 🛠️ What I built
 
 Everything in this repo was built by **Matt Macosko**:
 
@@ -127,9 +130,12 @@ Upstream: Rust, Microsoft's [`windows`](https://crates.io/crates/windows) crate,
 [`unicode-width`](https://crates.io/crates/unicode-width). Claude Code is Anthropic's tool; Trinidad
 Head only hosts it.
 
----
+<img src="https://raw.githubusercontent.com/nicedreamzapp/trinidad-head/main/assets/readme/s03-rule.svg" width="100%" alt="">
 
-## 📦 Get it
+
+<a id="-get-it"></a>
+<picture><source media="(max-width: 610px), (min-width: 768px) and (max-width: 895px)" srcset="https://raw.githubusercontent.com/nicedreamzapp/trinidad-head/main/assets/readme/s04-banner-m.svg"><source media="(max-width: 1149px)" srcset="https://raw.githubusercontent.com/nicedreamzapp/trinidad-head/main/assets/readme/s04-banner-mid.svg"><img src="https://raw.githubusercontent.com/nicedreamzapp/trinidad-head/main/assets/readme/s04-banner.svg" width="100%" alt="04. Get it. Download, build, test"></picture>
+<picture><source media="(max-width: 610px), (min-width: 768px) and (max-width: 895px)" srcset="https://raw.githubusercontent.com/nicedreamzapp/trinidad-head/main/assets/readme/s04-r1-m.svg"><source media="(max-width: 1149px)" srcset="https://raw.githubusercontent.com/nicedreamzapp/trinidad-head/main/assets/readme/s04-r1-mid.svg"><img src="https://raw.githubusercontent.com/nicedreamzapp/trinidad-head/main/assets/readme/s04-r1.svg" width="100%" alt="Mac. Apple Silicon and Intel, macOS 14+. Windows. Windows 10 and 11. Tests. CI runs on Linux, Mac and Windows."></picture>
 
 **[⬇️ Download for Mac](https://github.com/nicedreamzapp/trinidad-head/releases/latest/download/Trinidad-Head-mac.zip)**
 (Apple Silicon and Intel, macOS 14+) &nbsp;·&nbsp;
@@ -182,15 +188,19 @@ drive the real app window are separate: [scripts/mac-selftest.sh](scripts/mac-se
 - **One shell per window.** No tabs or splits.
 - **The Windows download is not code-signed**, so SmartScreen warns on first launch (see above).
 
----
+<img src="https://raw.githubusercontent.com/nicedreamzapp/trinidad-head/main/assets/readme/s04-rule.svg" width="100%" alt="">
 
-## 📜 License
+
+<a id="license"></a>
+<picture><source media="(max-width: 610px), (min-width: 768px) and (max-width: 895px)" srcset="https://raw.githubusercontent.com/nicedreamzapp/trinidad-head/main/assets/readme/s05-banner-m.svg"><source media="(max-width: 1149px)" srcset="https://raw.githubusercontent.com/nicedreamzapp/trinidad-head/main/assets/readme/s05-banner-mid.svg"><img src="https://raw.githubusercontent.com/nicedreamzapp/trinidad-head/main/assets/readme/s05-banner.svg" width="100%" alt="05. License. MIT or Apache 2.0"></picture>
+
+📜 **Dual-licensed** · MIT or Apache 2.0, at your option.
+
 
 Trinidad Head is dual-licensed under either the [MIT License](LICENSE-MIT) or the
 [Apache License 2.0](LICENSE-APACHE), at your option, the same way most Rust projects are.
 Unless you say otherwise, any contribution you submit is dual-licensed the same way.
 
----
 
 <div align="center">
 
@@ -199,3 +209,6 @@ Made in Humboldt County, California by **[Matt Macosko](https://nicedreamzwholes
 © 2026 Matt Macosko. Licensed under MIT or Apache-2.0, your choice.
 
 </div>
+
+<img src="https://raw.githubusercontent.com/nicedreamzapp/trinidad-head/main/assets/readme/s05-rule.svg" width="100%" alt="">
+
