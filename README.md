@@ -15,6 +15,7 @@
 [![Rust](https://img.shields.io/badge/written_in-Rust-b7410e?style=for-the-badge&logo=rust&logoColor=white)](https://www.rust-lang.org/)
 [![From scratch](https://img.shields.io/badge/built-from_scratch-a855f7?style=for-the-badge)](#-whats-inside)
 [![CI](https://img.shields.io/github/actions/workflow/status/nicedreamzapp/trinidad-head/ci.yml?branch=main&style=for-the-badge&logo=githubactions&logoColor=white&label=CI)](https://github.com/nicedreamzapp/trinidad-head/actions/workflows/ci.yml)
+[![OpenSSF Scorecard](https://img.shields.io/ossf-scorecard/github.com/nicedreamzapp/trinidad-head?label=OpenSSF%20Scorecard&style=for-the-badge)](https://scorecard.dev/viewer/?uri=github.com/nicedreamzapp/trinidad-head)
 
 </div>
 
