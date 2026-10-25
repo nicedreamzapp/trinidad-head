@@ -8,8 +8,7 @@ description: Who built Trinidad Head and the upstream projects it relies on, inc
 ## Trinidad Head
 
 Trinidad Head is built by **Matt Macosko**
-([project page](https://nicedreamzwholesale.com/software/trinidad-head/)). Some commits in the
-history are co-authored with Claude, Anthropic's AI model, and are marked that way in git.
+([project page](https://nicedreamzwholesale.com/software/trinidad-head/)).
 
 Licensed under either the [MIT License](https://github.com/nicedreamzapp/trinidad-head/blob/main/LICENSE-MIT)
 or the [Apache License 2.0](https://github.com/nicedreamzapp/trinidad-head/blob/main/LICENSE-APACHE),
