@@ -147,6 +147,11 @@ Head only hosts it.
   Apple, so there's no warning.
 - **Windows:** unzip and double-click Trinidad Head.exe. If a blue "protected your PC" box shows,
   click **More info**, then **Run anyway**.
+- **Windows, one line in PowerShell:** downloads the latest release (checked against its SHA-256),
+  installs it to `%LOCALAPPDATA%\Programs\TrinidadHead` and adds it to the Start Menu, no admin needed.
+  `irm https://raw.githubusercontent.com/nicedreamzapp/trinidad-head/main/install.ps1 | iex`
+  Uninstall (keeps your settings unless you add `-Purge`):
+  `irm https://raw.githubusercontent.com/nicedreamzapp/trinidad-head/main/uninstall.ps1 | iex`
 
 Or build it yourself:
 
